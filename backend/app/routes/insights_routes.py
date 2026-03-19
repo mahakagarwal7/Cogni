@@ -8,11 +8,11 @@ from app.models.memory_types import APIResponse
 router = APIRouter(prefix="/insights", tags=["insights"])
 
 @router.get("/shadow", response_model=APIResponse)
-async def get_shadow_prediction(days: int = Query(7, description="Days to analyze")):
-    """Get Cognitive Shadow prediction"""
+async def get_shadow_prediction(topic: str = Query(None, description="Current topic being studied (e.g., recursion)"), days: int = Query(7, description="Days to analyze")):
+    """Get Cognitive Shadow prediction based on current or past topics"""
     try:
         engine = ShadowEngine()
-        result = await engine.get_prediction(days=days)
+        result = await engine.get_prediction(current_topic=topic, days=days)
         return APIResponse(
             status="success",
             data=result,

@@ -34,8 +34,12 @@ export const api = {
   },
 
   
-  async getShadowPrediction(days: number = 7): Promise<APIResponse> {
-    const res = await fetch(`${API_URL}/insights/shadow?days=${days}`);
+  async getShadowPrediction(topic?: string, days: number = 7): Promise<APIResponse> {
+    const params = new URLSearchParams({ days: String(days) });
+    if (topic) {
+      params.append('topic', topic);
+    }
+    const res = await fetch(`${API_URL}/insights/shadow?${params.toString()}`);
     return res.json();
   },
 
