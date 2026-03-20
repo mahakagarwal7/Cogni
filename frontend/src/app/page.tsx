@@ -399,8 +399,9 @@ export default function ChatPage() {
       const response = await api.generateSummary(conversationText);
       
       if (response.data) {
-        const preview = response.data.preview || "Summary unavailable";
-        const fullSummaryText = response.data.full_summary || "Summary unavailable";
+        const responseData = response.data as Record<string, any>;
+        const preview = responseData.preview || "Summary unavailable";
+        const fullSummaryText = responseData.full_summary || "Summary unavailable";
         
         setPreviewSummary(preview);
         setFullSummary(fullSummaryText);
@@ -557,23 +558,44 @@ export default function ChatPage() {
       <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 text-white relative overflow-hidden">
         {/* Elegant background gradients */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/20 via-zinc-950 to-zinc-950"></div>
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.1)_0,rgba(0,0,0,0)_60%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.15)_0,rgba(0,0,0,0)_50%)]" />
         
-        <div className="z-10 flex flex-col items-center max-w-3xl text-center px-6 animate-in fade-in zoom-in duration-1000">
-          <div className="mb-8 rounded-full bg-purple-500/10 p-5 ring-1 ring-purple-500/30 shadow-[0_0_40px_rgba(168,85,247,0.2)]">
-            <MagicWandIcon className="h-14 w-14 text-purple-400" />
+        {/* Subtle grid pattern for depth */}
+        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-50"></div>
+
+        {/* Floating decorative elements */}
+        <div className="absolute top-1/4 left-1/4 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-purple-600/20 blur-[120px]" />
+        <div className="absolute bottom-1/4 right-1/4 h-64 w-64 translate-x-1/2 translate-y-1/2 rounded-full bg-indigo-600/20 blur-[120px]" />
+
+        <div className="z-10 flex flex-col items-center max-w-4xl text-center px-6 animate-in fade-in zoom-in duration-1000 slide-in-from-bottom-8">
+          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-1.5 text-sm font-medium text-purple-300 shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-md">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-75"></span>
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-purple-500"></span>
+            </span>
+            Metacognitive AI Engine
           </div>
-          <h1 className="mb-6 py-2 pr-2 text-7xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-indigo-400 to-purple-400 drop-shadow-sm">
+
+          <div className="mb-8 rounded-full bg-purple-500/10 p-6 ring-1 ring-purple-500/30 shadow-[0_0_60px_rgba(168,85,247,0.25)] backdrop-blur-sm transition-transform duration-500 hover:scale-110">
+            <MagicWandIcon className="h-16 w-16 text-purple-400" />
+          </div>
+          <h1 className="mb-2 pt-2 pb-6 pr-2 text-8xl md:text-9xl font-extrabold leading-tight tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-purple-300 via-indigo-400 to-purple-600 drop-shadow-lg">
             Cogni
           </h1>
-          <p className="mb-12 text-xl text-zinc-400 leading-relaxed max-w-2xl font-light">
-            Your Metacognitive Study Companion. Experience elegant, personalized learning that adapts to your unique cognitive patterns and memories.
+          <p className="mb-12 text-xl md:text-2xl text-zinc-400 leading-relaxed max-w-2xl font-light">
+            Your intelligent study companion. It remembers your struggles, adapts to your patterns, and helps you master complex topics.
           </p>
           <Button
             onClick={() => setIsStarted(true)}
-            className="h-16 rounded-full bg-purple-600 px-12 text-lg font-medium text-white shadow-[0_0_30px_rgba(168,85,247,0.35)] transition-all duration-300 hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_50px_rgba(168,85,247,0.5)] active:scale-95"
+            className="group relative h-16 overflow-hidden rounded-full bg-purple-600 px-14 text-xl font-medium text-white shadow-[0_0_40px_rgba(168,85,247,0.4)] transition-all duration-300 hover:scale-105 hover:shadow-[0_0_60px_rgba(168,85,247,0.6)] active:scale-95"
           >
-            Let's Study
+            <span className="relative z-10 flex items-center gap-2">
+              Let&apos;s Study
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6 transition-transform duration-300 group-hover:translate-x-1">
+                <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
+              </svg>
+            </span>
+            <div className="absolute inset-0 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-600 opacity-0 transition-opacity duration-300 group-hover:opacity-100"></div>
           </Button>
         </div>
       </div>
@@ -585,7 +607,7 @@ export default function ChatPage() {
       <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 p-5">
         <div className="flex items-center gap-2">
           <MagicWandIcon className="h-10 w-10 text-purple-500" />
-          <h1 className="bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text pb-1 pr-1 text-4xl font-extrabold tracking-tight text-transparent drop-shadow-md">Cogni</h1>
+          <h1 className="bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text pb-3 pt-1 pr-1 text-4xl font-extrabold leading-tight tracking-tight text-transparent drop-shadow-md">Cogni</h1>
         </div>
         <Separator className="my-6 border-zinc-800" />
         <nav className="flex flex-col gap-3">
