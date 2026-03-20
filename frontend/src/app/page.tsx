@@ -138,6 +138,8 @@ const QUICK_PROMPTS: Record<FeatureMode, string[]> = {
   ],
 };
 export default function ChatPage() {
+  // Intro screen state
+  const [isStarted, setIsStarted] = useState(false);
   const [activeFeature, setActiveFeature] =
     useState<FeatureMode>("archaeology");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -152,6 +154,10 @@ export default function ChatPage() {
     confusion?: number;
     errorPattern?: string;
   }>({});
+  // UPGRADE: Add summary state
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [previewSummary, setPreviewSummary] = useState<string | null>(null);
+  const [fullSummary, setFullSummary] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -181,13 +187,25 @@ export default function ChatPage() {
     checkBackend();
   }, []);
   const handleSend = async () => {
+    // Resonance and Contagion use header topic field, not main input
     const requiresInput = [
       "archaeology",
       "socratic",
-      "resonance",
-      "contagion",
     ].includes(activeFeature);
-    if ((requiresInput && !input.trim()) || loading) return;
+    
+    // For contagion, check context.topic instead
+    if (activeFeature === "contagion") {
+      if (!context.topic?.trim()) return;
+    } else if (requiresInput && !input.trim()) {
+      return;
+    }
+    
+    // For resonance, check context.topic instead
+    if (activeFeature === "resonance") {
+      if (!context.topic?.trim()) return;
+    }
+    
+    if (loading) return;
 
     if (requiresInput) {
       const userMessage: Message = {
@@ -226,13 +244,14 @@ export default function ChatPage() {
         }
 
         case "resonance": {
-          const resonanceTopic = context.topic || extractTopic(input);
+          const resonanceTopic = context.topic!.trim(); // Guaranteed to exist from handleSend check
           response = await api.getResonance(resonanceTopic);
           break;
         }
 
         case "contagion": {
-          const contagionTopic = input.trim();
+          // UPGRADE: Use header topic field like Archaeology, not main input
+          const contagionTopic = context.topic || input.trim();
           if (!contagionTopic) {
             setMessages((prev) => [
               ...prev,
@@ -240,7 +259,7 @@ export default function ChatPage() {
                 id: Date.now().toString(),
                 role: "assistant",
                 content:
-                  "Please enter a topic you want to learn from peers about (e.g., machine learning, web development, database design).",
+                  "Please enter a topic in the header field above that you want to learn about (e.g., recursion, dynamic programming, sorting algorithms).",
                 timestamp: new Date(),
               },
             ]);
@@ -261,6 +280,20 @@ export default function ChatPage() {
             data: { result: { recommendation: "Select a feature to get started!" } },
           };
         }
+      }
+
+      if (!response) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: "assistant",
+            content: "No response received. Please try again.",
+            timestamp: new Date(),
+          },
+        ]);
+        setLoading(false);
+        return;
       }
 
       if (typeof response?.demo_mode === "boolean") {
@@ -337,34 +370,245 @@ export default function ChatPage() {
     setInput(prompt);
   };
 
+  // UPGRADE: Generate conversation summary
+  const generateSummary = async () => {
+    setSummaryLoading(true);
+    
+    try {
+      // Build conversation text from messages
+      const conversationText = messages
+        .filter(m => m.role !== 'system')
+        .map(m => `${m.role === 'user' ? 'You' : 'Assistant'}: ${m.content}`)
+        .join("\n\n");
+      
+      if (conversationText.length < 50) {
+        const errorMsg = "Not enough conversation yet to summarize. Keep learning!";
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: errorMsg,
+            timestamp: new Date(),
+          }
+        ]);
+        setSummaryLoading(false);
+        return;
+      }
+      
+      const response = await api.generateSummary(conversationText);
+      
+      if (response.data) {
+        const preview = response.data.preview || "Summary unavailable";
+        const fullSummaryText = response.data.full_summary || "Summary unavailable";
+        
+        setPreviewSummary(preview);
+        setFullSummary(fullSummaryText);
+        
+        // Add preview to chat
+        const previewMessage = `📚 **Your Learning Summary Preview**\n\n${preview}\n\n*(Click 'Download PDF' to get the complete study plan)*`;
+        
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: previewMessage,
+            timestamp: new Date(),
+          }
+        ]);
+      } else {
+        const errorMsg = "Summary generation failed. Please try again.";
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            role: "assistant",
+            content: errorMsg,
+            timestamp: new Date(),
+          }
+        ]);
+      }
+    } catch (error) {
+      console.error("Summary generation failed:", error);
+      const errorMsg = `❌ Summary generation failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`;
+      setMessages(prev => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: errorMsg,
+          timestamp: new Date(),
+        }
+      ]);
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
+
+  // UPGRADE: Download summary as PDF
+  const downloadSummaryPDF = async () => {
+    if (!fullSummary) return;
+    
+    try {
+      // Get topic name for filename
+      const topicName = context.topic || extractTopic(input) || 'learning_summary';
+      const sanitizedTopic = topicName.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+      
+      // Use fetch directly to better handle response types
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/memory/summary/pdf`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          summary_text: fullSummary, 
+          topic_name: sanitizedTopic 
+        })
+      });
+      
+      // Check if response is successful
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      // Check content type to see if it's PDF or error JSON
+      const contentType = response.headers.get('content-type') || '';
+      const blob = await response.blob();
+      
+      if (blob.size === 0) {
+        throw new Error('Server returned empty response');
+      }
+      
+      // If content type is JSON, it's an error response
+      if (contentType.includes('application/json')) {
+        const errorText = await blob.text();
+        const errorData = JSON.parse(errorText);
+        throw new Error(errorData.message || 'PDF generation failed');
+      }
+      
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `${sanitizedTopic}_study_plan.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      // Add success message to chat
+      const successMsg = `✅ **Your Complete Study Plan is Ready!**\n\n📥 Downloaded as: **${sanitizedTopic}_study_plan.pdf**\n\n🎯 Review this summary to track your learning progress and key insights. Happy studying!`;
+      
+      setMessages(prev => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: successMsg,
+          timestamp: new Date(),
+        }
+      ]);
+    } catch (error) {
+      console.error("PDF download failed:", error);
+      
+      // Show error message in chat
+      const errorMsg = `❌ PDF download failed: ${error instanceof Error ? error.message : 'Unknown error'}. Attempting text download...`;
+      setMessages(prev => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: errorMsg,
+          timestamp: new Date(),
+        }
+      ]);
+      
+      // Fallback: download as text
+      try {
+        const element = document.createElement('a');
+        const topicName = context.topic || 'learning_summary';
+        const sanitizedTopic = topicName.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+        
+        element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(fullSummary || ''));
+        element.setAttribute('download', `${sanitizedTopic}_study_plan.txt`);
+        element.style.display = 'none';
+        document.body.appendChild(element);
+        element.click();
+        document.body.removeChild(element);
+        
+        // Add fallback success message
+        const fallbackMsg = `✅ Study plan downloaded as text file instead: **${sanitizedTopic}_study_plan.txt**`;
+        setMessages(prev => [
+          ...prev,
+          {
+            id: (Date.now() + 2).toString(),
+            role: "assistant",
+            content: fallbackMsg,
+            timestamp: new Date(),
+          }
+        ]);
+      } catch (textError) {
+        console.error("Text download also failed:", textError);
+      }
+    }
+  };
+
+  if (!isStarted) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 text-white relative overflow-hidden">
+        {/* Elegant background gradients */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/20 via-zinc-950 to-zinc-950"></div>
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.1)_0,rgba(0,0,0,0)_60%)]" />
+        
+        <div className="z-10 flex flex-col items-center max-w-3xl text-center px-6 animate-in fade-in zoom-in duration-1000">
+          <div className="mb-8 rounded-full bg-purple-500/10 p-5 ring-1 ring-purple-500/30 shadow-[0_0_40px_rgba(168,85,247,0.2)]">
+            <MagicWandIcon className="h-14 w-14 text-purple-400" />
+          </div>
+          <h1 className="mb-6 py-2 pr-2 text-7xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-purple-400 via-indigo-400 to-purple-400 drop-shadow-sm">
+            Cogni
+          </h1>
+          <p className="mb-12 text-xl text-zinc-400 leading-relaxed max-w-2xl font-light">
+            Your Metacognitive Study Companion. Experience elegant, personalized learning that adapts to your unique cognitive patterns and memories.
+          </p>
+          <Button
+            onClick={() => setIsStarted(true)}
+            className="h-16 rounded-full bg-purple-600 px-12 text-lg font-medium text-white shadow-[0_0_30px_rgba(168,85,247,0.35)] transition-all duration-300 hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_50px_rgba(168,85,247,0.5)] active:scale-95"
+          >
+            Let's Study
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen bg-zinc-900 text-white">
-      <aside className="flex w-64 flex-col border-r border-zinc-800 bg-zinc-950 p-4">
+      <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 p-5">
         <div className="flex items-center gap-2">
-          <MagicWandIcon className="h-8 w-8 text-purple-500" />
-          <h1 className="bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text text-2xl font-bold tracking-tight text-transparent drop-shadow-md">Cogni</h1>
+          <MagicWandIcon className="h-10 w-10 text-purple-500" />
+          <h1 className="bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text pb-1 pr-1 text-4xl font-extrabold tracking-tight text-transparent drop-shadow-md">Cogni</h1>
         </div>
-        <Separator className="my-4" />
-        <nav className="flex flex-col gap-2">
+        <Separator className="my-6 border-zinc-800" />
+        <nav className="flex flex-col gap-3">
           {FEATURES.map((feature) => (
             <Button
               key={feature.id}
               variant="ghost"
+              size="lg"
               onClick={() => setActiveFeature(feature.id)}
-              className={`justify-start gap-3 transition-all duration-200 ${
+              className={`justify-start gap-4 text-base transition-all duration-200 ${
                 activeFeature === feature.id
                   ? "bg-purple-500/15 font-medium text-purple-300 shadow-[inset_4px_0_0_0_rgba(168,85,247,0.8)] hover:bg-purple-500/25"
-                  : "text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  : "text-zinc-400 font-normal hover:bg-zinc-800 hover:text-zinc-200"
               }`}
             >
-              {feature.icon}
+              <span className="scale-110">{feature.icon}</span>
               {feature.label}
             </Button>
           ))}
         </nav>
         <div className="mt-auto">
-          <Separator className="my-4" />
-          <div className="flex items-center justify-between text-sm">
+          <Separator className="my-5 border-zinc-800" />
+          <div className="flex items-center justify-between text-[15px]">
             <div className="flex items-center gap-2">
               <span
                 className={`h-2 w-2 rounded-full ${
@@ -385,7 +629,7 @@ export default function ChatPage() {
             </div>
             {lastDemoMode !== null && (
               <span
-                className={`rounded-full px-2 py-0.5 text-xs ${
+                className={`rounded-full px-3 py-1 text-xs font-medium tracking-wide ${
                   lastDemoMode === false
                     ? "bg-green-500/20 text-green-400"
                     : "bg-yellow-500/20 text-yellow-400"
@@ -398,42 +642,57 @@ export default function ChatPage() {
         </div>
       </aside>
       <div className="flex flex-1 flex-col">
-        <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900/80 p-4 backdrop-blur-md">
+        <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900/85 p-6 backdrop-blur-xl shadow-sm">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-zinc-100">
+              <h2 className="text-3xl font-semibold text-zinc-100 tracking-tight">
                 {FEATURES.find((f) => f.id === activeFeature)?.label}
               </h2>
-              <p className="text-sm text-zinc-400">
+              <p className="text-base mt-1 text-zinc-400 font-light">
                 {FEATURES.find((f) => f.id === activeFeature)?.description}
               </p>
             </div>
-            <Button variant="ghost" size="icon" onClick={clearChat}>
-              <TrashIcon className="h-5 w-5" />
+            <Button variant="ghost" size="icon" onClick={clearChat} className="hover:bg-red-500/10 hover:text-red-400 transition-colors">
+              <TrashIcon className="h-5 w-5 scale-110" />
             </Button>
           </div>
-          <Separator className="my-4" />
-          <div className="flex gap-4">
+          <Separator className="my-5 border-zinc-800" />
+          <div className="flex gap-6 items-end">
             {(activeFeature === "archaeology" ||
               activeFeature === "socratic" ||
               activeFeature === "resonance" ||
-              activeFeature === "shadow") && (
+              activeFeature === "shadow") && 
+              activeFeature !== "resonance" && (
               <div className="flex-1">
-                <Label htmlFor="topic">Target Topic</Label>
+                <Label htmlFor="topic" className="text-[15px] font-medium text-zinc-300">Target Topic</Label>
                 <Input
                   id="topic"
                   type="text"
                   value={context.topic || ""}
                   onChange={(e) => handleContextUpdate("topic", e.target.value)}
                   placeholder="e.g., recursion, dynamic programming..."
-                  className="mt-2 border-zinc-700 bg-zinc-900/50 shadow-sm backdrop-blur-sm transition-all hover:bg-zinc-800/50 focus-visible:border-purple-500 focus-visible:ring-1 focus-visible:ring-purple-500 focus-visible:shadow-[0_0_15px_rgba(168,85,247,0.2)]"
+                  className="mt-3 h-12 text-base border-zinc-600 bg-zinc-950/50 shadow-inner backdrop-blur-sm transition-all hover:bg-zinc-900 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/40 focus-visible:shadow-[0_0_20px_rgba(168,85,247,0.25)] placeholder:text-zinc-600"
+                />
+              </div>
+            )}
+
+            {activeFeature === "resonance" && (
+              <div className="flex-1">
+                <Label htmlFor="topic" className="text-[15px] font-medium text-zinc-300">Target Topic</Label>
+                <Input
+                  id="topic"
+                  type="text"
+                  value={context.topic || ""}
+                  onChange={(e) => handleContextUpdate("topic", e.target.value)}
+                  placeholder="e.g., recursion, dynamic programming..."
+                  className="mt-3 h-12 text-base border-zinc-600 bg-zinc-950/50 shadow-inner backdrop-blur-sm transition-all hover:bg-zinc-900 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/40 focus-visible:shadow-[0_0_20px_rgba(168,85,247,0.25)] placeholder:text-zinc-600"
                 />
               </div>
             )}
 
             {activeFeature === "archaeology" && (
-              <div className="w-48">
-                <Label htmlFor="confusion">
+              <div className="w-56 pb-2">
+                <Label htmlFor="confusion" className="text-[15px] font-medium text-zinc-300 mb-4 block">
                   Confusion Level: {context.confusion || 3}
                 </Label>
                 <Slider
@@ -451,24 +710,20 @@ export default function ChatPage() {
 
             {activeFeature === "contagion" && (
               <div className="flex-1">
-                <Label htmlFor="errorPattern">Error Pattern</Label>
-                <select
-                  id="errorPattern"
-                  value={context.errorPattern || "base_case_missing"}
-                  onChange={(e) =>
-                    handleContextUpdate("errorPattern", e.target.value)
-                  }
-                  className="mt-2 w-full cursor-pointer rounded-md border border-zinc-700 bg-zinc-900/50 p-2 text-sm text-zinc-200 shadow-sm outline-none backdrop-blur-sm transition-all hover:bg-zinc-800/50 focus:border-purple-500 focus:ring-1 focus:ring-purple-500 focus:shadow-[0_0_15px_rgba(168,85,247,0.2)]"
-                >
-                  <option value="base_case_missing">Base Case Missing</option>
-                  <option value="stack_overflow">Stack Overflow</option>
-                  <option value="off_by_one">Off-by-One</option>
-                </select>
+                <Label htmlFor="topic" className="text-[15px] font-medium text-zinc-300">Topic to Learn</Label>
+                <Input
+                  id="topic"
+                  type="text"
+                  value={context.topic || ""}
+                  onChange={(e) => handleContextUpdate("topic", e.target.value)}
+                  placeholder="e.g., recursion, dynamic programming, sorting..."
+                  className="mt-3 h-12 text-base border-zinc-600 bg-zinc-950/50 shadow-inner backdrop-blur-sm transition-all hover:bg-zinc-900 focus-visible:border-purple-500 focus-visible:ring-2 focus-visible:ring-purple-500/40 focus-visible:shadow-[0_0_20px_rgba(168,85,247,0.25)] placeholder:text-zinc-600"
+                />
               </div>
             )}
           </div>
         </header>
-        <main className="flex-1 scroll-smooth overflow-y-auto p-4 md:p-8">
+        <main className="flex-1 scroll-smooth overflow-y-auto p-6 md:p-10">
           <div className="space-y-4">
             {messages.map((msg) => (
               <MessageBubble key={msg.id} message={msg} />
@@ -477,19 +732,19 @@ export default function ChatPage() {
             <div ref={messagesEndRef} />
           </div>
           {messages.length <= 1 && !loading && (
-            <div className="mt-8">
-              <h3 className="mb-4 text-center text-sm text-zinc-400">
+            <div className="mt-12">
+              <h3 className="mb-6 text-center text-[15px] font-medium tracking-wide text-zinc-400 uppercase">
                 Suggestions
               </h3>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
                 {QUICK_PROMPTS[activeFeature].map((prompt, i) => (
                   <Card
                     key={i}
                     onClick={() => handleQuickPrompt(prompt)}
-                    className="group cursor-pointer border-zinc-800/50 bg-zinc-900/40 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-purple-500/50 hover:bg-purple-500/10 hover:shadow-[0_8px_30px_-4px_rgba(168,85,247,0.2)] active:translate-y-0 active:scale-95"
+                    className="group cursor-pointer border-zinc-700/50 bg-zinc-900/60 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-purple-500/60 hover:bg-purple-500/10 hover:shadow-[0_8px_30px_-4px_rgba(168,85,247,0.25)] active:translate-y-0 active:scale-95"
                   >
-                    <CardContent className="p-4">
-                      <p className="text-sm transition-colors group-hover:text-purple-300">{prompt}</p>
+                    <CardContent className="p-5 text-center">
+                      <p className="text-base leading-relaxed transition-colors group-hover:text-purple-200 text-zinc-300">{prompt}</p>
                     </CardContent>
                   </Card>
                 ))}
@@ -497,7 +752,7 @@ export default function ChatPage() {
             </div>
           )}
         </main>
-        <footer className="border-t border-zinc-800/50 bg-zinc-950/50 p-4 backdrop-blur-xl">
+        <footer className="border-t border-zinc-800 bg-zinc-950/80 p-6 backdrop-blur-xl">
           {activeFeature === "shadow" ? (
             <div className="mx-auto flex max-w-4xl justify-center">
               <Button
@@ -515,43 +770,70 @@ export default function ChatPage() {
                 )}
               </Button>
             </div>
-          ) : activeFeature === "memory" ? (
+          ) : activeFeature === "resonance" ? (
             <div className="mx-auto flex max-w-4xl justify-center">
               <Button
                 onClick={handleSend}
-                disabled={loading}
-                className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95"
+                disabled={loading || !context.topic}
+                className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? (
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
                 ) : (
                   <>
-                    <MagicWandIcon className="mr-2 h-5 w-5" />
-                    Load Memory Profile
+                    <StarIcon className="mr-2 h-5 w-5" />
+                    Show Hidden Connections
                   </>
                 )}
               </Button>
             </div>
+          ) : activeFeature === "memory" ? (
+            <div className="mx-auto flex max-w-4xl justify-center gap-4">
+              <Button
+                onClick={generateSummary}
+                disabled={summaryLoading || messages.length <= 1}
+                className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95"
+              >
+                {summaryLoading ? (
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+                ) : (
+                  <>
+                    <MagicWandIcon className="mr-2 h-5 w-5" />
+                    Generate Summary
+                  </>
+                )}
+              </Button>
+              {fullSummary && (
+                <Button
+                  onClick={downloadSummaryPDF}
+                  className="h-14 rounded-full bg-indigo-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-indigo-500 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] active:scale-95"
+                >
+                  📥 Download PDF
+                </Button>
+              )}
+            </div>
           ) : (
-            <div className="relative mx-auto flex max-w-4xl items-center">
+            <div className="relative mx-auto flex max-w-5xl items-center rounded-full border border-zinc-600/80 bg-zinc-900/70 shadow-lg backdrop-blur-md transition-all focus-within:border-purple-500 focus-within:bg-zinc-900 focus-within:ring-4 focus-within:ring-purple-500/20 focus-within:shadow-[0_0_30px_rgba(168,85,247,0.15)] hover:border-zinc-500">
               <Input
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={getPlaceholder(activeFeature)}
-                className="h-14 rounded-full border-zinc-700/50 bg-zinc-900/80 pr-14 text-base shadow-lg transition-all hover:bg-zinc-900 focus-visible:border-purple-500 focus-visible:bg-zinc-900 focus-visible:ring-1 focus-visible:ring-purple-500/50 focus-visible:shadow-[0_0_20px_rgba(168,85,247,0.25)]"
+                className="h-16 w-full border-0 bg-transparent px-8 pr-16 text-[17px] placeholder:text-zinc-500 focus-visible:ring-0 shadow-none"
                 disabled={loading}
               />
               <Button
                 size="icon"
-                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-purple-600 text-white shadow-md transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-lg active:scale-95"
+                className="absolute right-2 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-purple-600 text-white shadow-md transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-md"
                 onClick={handleSend}
                 disabled={loading || !input.trim()}
               >
                 {loading ? (
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
                 ) : (
-                  <PlusCircledIcon className="h-5 w-5" />
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6 ml-0.5">
+                    <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+                  </svg>
                 )}
               </Button>
             </div>
@@ -575,7 +857,7 @@ function MessageBubble({ message }: { message: Message }) {
 
   if (isSystem) {
     return (
-      <div className="my-6 text-center text-sm font-medium text-zinc-500">
+      <div className="my-8 text-center text-base font-medium text-zinc-500">
         {message.content.split("\n").map((line, i) => (
           <p key={i}>{line}</p>
         ))}
@@ -585,18 +867,18 @@ function MessageBubble({ message }: { message: Message }) {
 
   return (
     <div
-      className={`group message-enter flex items-start gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+      className={`group message-enter flex items-end gap-4 ${isUser ? "justify-end" : "justify-start"}`}
     >
       {!isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-purple-400 shadow-sm">
+        <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-800 text-purple-400 shadow-sm">
           {FEATURES.find((f) => f.id === message.feature)?.icon}
         </div>
       )}
       <Card
-        className={`relative max-w-[85%] border shadow-md transition-all duration-300 sm:max-w-xl ${
+        className={`relative max-w-[85%] border-none shadow-md transition-all duration-300 sm:max-w-2xl ${
           isUser
-            ? "rounded-3xl rounded-tr-sm border-purple-500/30 bg-gradient-to-br from-purple-600 to-indigo-600 text-white"
-            : "rounded-3xl rounded-tl-sm border-zinc-700/50 bg-zinc-800/80 text-zinc-100 backdrop-blur-sm hover:border-zinc-600/50"
+            ? "rounded-2xl rounded-br-sm bg-purple-600 text-white"
+            : "rounded-2xl rounded-bl-sm bg-zinc-800/90 text-zinc-100 backdrop-blur-sm"
         }`}
       >
         {!isUser && (
@@ -612,10 +894,10 @@ function MessageBubble({ message }: { message: Message }) {
             )}
           </button>
         )}
-        <CardContent className="p-4">
+        <CardContent className="px-6 py-5 text-[17px]">
           {message.content.split("\n").map((line, i) => (
-            <p key={i} className={`leading-relaxed tracking-wide ${i > 0 ? "mt-3" : ""}`}>
-              {renderRichLine(line)}
+            <p key={i} className={`leading-relaxed tracking-wide ${i > 0 ? "mt-4" : ""}`}>
+              {renderRichLine(line, isUser)}
             </p>
           ))}
           {message.metadata && Object.keys(message.metadata).length > 0 && (
@@ -623,7 +905,7 @@ function MessageBubble({ message }: { message: Message }) {
               {Object.entries(message.metadata).map(([key, value]) => (
                 <div
                   key={key}
-                  className="flex items-center gap-1 rounded-full bg-zinc-700/50 px-2 py-1"
+                  className="flex items-center gap-1.5 rounded-full bg-zinc-700/50 px-3 py-1"
                 >
                   <span className="font-semibold capitalize">
                     {key.replace(/_/g, " ")}:
@@ -642,8 +924,8 @@ function MessageBubble({ message }: { message: Message }) {
         </CardFooter>
       </Card>
       {isUser && (
-        <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-purple-400/50 bg-gradient-to-br from-purple-500 to-indigo-600 shadow-md">
-          👤
+        <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-500/20 text-[13px] font-bold text-purple-300 ring-1 ring-purple-500/50 shadow-sm">
+          ST
         </div>
       )}
     </div>
@@ -652,12 +934,12 @@ function MessageBubble({ message }: { message: Message }) {
 
 function LoadingBubble() {
   return (
-    <div className="message-enter flex items-start gap-4">
-      <div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-purple-400 shadow-sm">
+    <div className="message-enter flex items-end gap-4">
+      <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-800 text-purple-400 shadow-sm">
         <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
       </div>
-      <Card className="max-w-[85%] rounded-3xl rounded-tl-sm border border-zinc-700/50 bg-zinc-800/80 shadow-md backdrop-blur-sm sm:max-w-xl">
-        <CardContent className="p-4">
+      <Card className="max-w-[85%] rounded-2xl rounded-bl-sm border-none bg-zinc-800/90 shadow-md backdrop-blur-sm sm:max-w-2xl">
+        <CardContent className="px-6 py-5">
           <div className="flex items-center gap-2">
             <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400" />
             <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400" />
@@ -669,12 +951,12 @@ function LoadingBubble() {
   );
 }
 
-function renderRichLine(line: string): React.ReactNode {
+function renderRichLine(line: string, isUser: boolean = false): React.ReactNode {
   const parts = line.split(/(\*\*.*?\*\*)/g);
   return parts.map((part, idx) => {
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
-        <strong key={idx} className="font-semibold text-purple-400">
+        <strong key={idx} className={`font-semibold ${isUser ? "text-purple-200" : "text-purple-400"}`}>
           {part.slice(2, -2)}
         </strong>
       );
@@ -711,8 +993,16 @@ function formatResponse(
       }
 
       if (data.recommendation) {
-        content += `**Recommendation**: ${String(data.recommendation)}`;
+        content += `**Recommendation**: ${String(data.recommendation)}\n\n`;
       }
+
+      if (data.adaptive_explanation) {
+        content += `**🧠 Explanation (Adaptive)**\n\n${String(data.adaptive_explanation)}`;
+        if (data.explanation_audience) {
+          metadata.explanation_audience = data.explanation_audience;
+        }
+      }
+
       return { content: content.trim(), metadata };
     }
 
@@ -750,19 +1040,36 @@ function formatResponse(
       const hiddenConnections = Array.isArray(data.hidden_connections)
         ? (data.hidden_connections as GenericRecord[])
         : [];
+      
+      let connectionContent = "";
+      
+      if (hiddenConnections.length > 0) {
+        connectionContent = hiddenConnections
+          .map(
+            (c, idx) => {
+              const num = idx + 1;
+              const topicName = String(c.topic ?? "topic").replace(/_/g, " ");
+              const strength = Math.round(Number(c.strength ?? 0) * 100);
+              const howConnects = String(c.connection ?? c.reason ?? "Related concept");
+              const whyMatters = String(c.depth ?? "Deepens conceptual understanding");
+              
+              return `**${num}. ${topicName}** (${strength}% connection strength)\n\n**How it connects:** ${howConnects}\n\n**Why it matters:** ${whyMatters}`;
+            }
+          )
+          .join("\n\n---\n\n");
+      } else {
+        connectionContent = "No hidden connections found. Try a different topic.";
+      }
+      
+      const insightText = String(data.insight ?? "").trim();
+      const finalContent = `**Hidden Connections for "${String(
+        data.topic || "your topic"
+      )}"**:\n\n${connectionContent}${
+        insightText ? `\n\n---\n\n**Key Insight:** ${insightText}` : ""
+      }`;
+      
       return {
-        content: `**Hidden Connections for "${String(
-          data.topic || "your topic"
-        )}"**:\n\n${
-          hiddenConnections
-            .map(
-              (c) =>
-                `• **${String(c.topic ?? "topic").replace(/_/g, " ")}** (${Math.round(
-                  Number(c.strength ?? 0) * 100
-                )}%): ${String(c.reason ?? "No reason available")}`
-            )
-            .join("\n") || "No connections found yet."
-        }\n\n${String(data.insight || "")}`,
+        content: finalContent,
         metadata: { connection_count: hiddenConnections.length },
       };
     }
@@ -773,6 +1080,42 @@ function formatResponse(
       const strategies = Array.isArray(data.additional_strategies)
         ? (data.additional_strategies as GenericRecord[])
         : [];
+      
+      // UPGRADE: Prioritize learning_plan if available
+      const learningPlan = String(data.learning_plan ?? "").trim();
+      
+      if (learningPlan) {
+        // Get topic name for motivational context
+        const topicName = String(data.error_pattern ?? "this topic").replace(/_/g, " ");
+        const communitySize = Number(data.community_size ?? 0);
+        
+        // UPGRADE: Add motivational preamble based on community insights
+        let motivationalPreamble = "";
+        if (communitySize > 0) {
+          motivationalPreamble = `📚 **Many students and professionals at your level have struggled with ${topicName}.** Based on what worked for ${communitySize} peers with similar learning patterns, here's your personalized path forward:\n\n`;
+        } else {
+          motivationalPreamble = `📚 **You're tackling ${topicName} — a topic many learners find challenging.** Here's a personalized roadmap to help you master it:\n\n`;
+        }
+        
+        // Build complete content with motivation + plan + strategy
+        let content = `**Your Personalized Learning Roadmap for "${topicName}"**\n\n${motivationalPreamble}${learningPlan}`;
+        
+        // Optionally add top strategy reference (without percentages)
+        const topStrat = String(data.top_strategy ?? "").trim();
+        if (topStrat && topStrat.length > 0) {
+          content += `\n\n---\n\n**🎯 Key Strategy to Focus On**\n\n${topStrat}`;
+        }
+        
+        // Add privacy note (optional)
+        const privacyNote = String(data.privacy_note ?? "").trim();
+        if (privacyNote) {
+          content += `\n\n*${privacyNote}*`;
+        }
+        
+        return { content, metadata };
+      }
+      
+      // Fallback: Legacy display (for backward compatibility)
       return {
         content: `**Community Insights**:\n\n**Top Strategy**: ${String(
           data.top_strategy ?? "unknown"

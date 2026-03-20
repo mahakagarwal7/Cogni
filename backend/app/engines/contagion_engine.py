@@ -22,46 +22,60 @@ class ContagionEngine:
         """
         Get insights personalized to THIS student's learning history.
         Uses Hindsight to query actual peer data for the specific topic/input.
+        Treats error_pattern as topic internally and generates a learning plan.
         
         Pipeline:
         1. Query Hindsight for peer data on this specific topic
         2. Recall student's personal learning history
         3. Generate topic-specific strategies using LLM
-        4. Return personalized recommendations
+        4. Generate mentor-guided learning plan
+        5. Return personalized recommendations (backward compatible)
         """
+        # UPGRADE: Treat error_pattern as topic internally
+        topic = error_pattern
+        
         # Step 1: Query Hindsight for peer insights on THIS TOPIC
-        hindsight_data = await self.hindsight.recall_global_contagion(error_pattern)
+        hindsight_data = await self.hindsight.recall_global_contagion(topic)
         
         # Step 2: Recall THIS STUDENT'S learning history
         student_memories = await self.hindsight.recall_all_memories(limit=20)
         personal_context = await self._extract_personal_patterns(
             student_memories=student_memories,
-            error_pattern=error_pattern
+            error_pattern=topic
         )
         
         # Step 3: Generate topic-specific strategies using LLM + Hindsight data
         strategies = await self._generate_topic_strategies(
-            topic=error_pattern,
+            topic=topic,
             personal_context=personal_context,
             hindsight_data=hindsight_data
         )
         
         # Step 4: Refine using LLM for personalization
         refined_result = await self._refine_for_student(
-            error_pattern=error_pattern,
+            error_pattern=topic,
             strategies=strategies,
             personal_context=personal_context
         )
         
-        # Step 5: Build response (EXACT same format - backward compatible)
+        # UPGRADE: Generate learning plan (NEW)
+        peer_strategies = hindsight_data.get("top_strategy", "")
+        learning_plan = await self._generate_learning_plan(
+            topic=topic,
+            peer_strategies=peer_strategies,
+            personal_context=personal_context
+        )
+        
+        # Step 5: Build response (EXACT same format - backward compatible + NEW learning_plan)
         return {
             "feature": "metacognitive_contagion",
             "error_pattern": error_pattern,
             "community_size": hindsight_data.get("community_size", 0),
-            "top_strategy": refined_result.get("top_strategy", self._generate_default_strategy(error_pattern)),
+            "top_strategy": refined_result.get("top_strategy", self._generate_default_strategy(topic)),
             "success_rate": refined_result.get("success_rate", 0.79),
             "privacy_note": "Personalized based on your learning history + peer patterns",
             "additional_strategies": refined_result.get("strategies", []),
+            "learning_plan": learning_plan,  # UPGRADE: NEW FIELD (safe to add)
             "demo_mode": hindsight_data.get("demo_mode", True)
         }
     
@@ -225,6 +239,103 @@ Success: [0.75-0.95]"""
                 unique.append(s)
         
         return unique[:5]
+    
+    async def _generate_learning_plan(
+        self,
+        topic: str,
+        peer_strategies: str,
+        personal_context: Dict[str, Any]
+    ) -> str:
+        """
+        UPGRADE: Generate a mentor-guided learning plan for the topic using LLM.
+        
+        Returns a clean, readable roadmap with 4-6 steps.
+        Each step explains WHAT to do and WHY.
+        No percentages, bullet symbols, or meta explanations.
+        """
+        if not self.llm.available:
+            # Safe fallback
+            return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
+        
+        # Build context
+        learning_style = personal_context.get("learning_style", "adaptive")
+        peer_benefit = f" What helped others: {peer_strategies}." if peer_strategies else ""
+        
+        prompt = f"""You are a mentor creating a personalized learning roadmap.
+
+Topic: {topic}
+Student's learning style: {learning_style}
+{peer_benefit}
+
+Create a structured learning plan for {topic}.
+
+CRITICAL REQUIREMENTS:
+- 4 to 6 clear steps
+- Each step explains WHAT to do and WHY it matters
+- Write as readable paragraphs, NOT bullet lists
+- NO percentage signs or numbers like "70%"
+- NO meta explanations like "let me explain" or "here's why"
+- NO thinking steps or brackets like <think>
+- NO truncation - complete thoughts only
+- Mentor-like, encouraging, practical tone
+- Focus on understanding and mastery
+
+Format: Just the plan text, nothing else."""
+
+        try:
+            response = self.llm.generate(prompt, max_tokens=800, temperature=0.6)
+            
+            # Clean output: remove thinking tags
+            cleaned = response.replace("<think>", "").replace("</think>", "").strip()
+            
+            # Remove meta-explanation lines
+            meta_patterns = [
+                "let me",
+                "here's",
+                "the key is",
+                "you should know",
+                "first of all",
+                "to be clear",
+                "in short"
+            ]
+            
+            lines = cleaned.split("\n")
+            cleaned_lines = []
+            skip_next = False
+            
+            for line in lines:
+                lower_line = line.lower().strip()
+                
+                # Skip intro/meta lines
+                is_meta = any(meta in lower_line for meta in meta_patterns)
+                
+                if is_meta and len(line) < 50:
+                    skip_next = True
+                    continue
+                
+                if skip_next and len(line.strip()) == 0:
+                    skip_next = False
+                    continue
+                
+                skip_next = False
+                
+                # Remove asterisks (markdown bold)
+                clean_line = line.replace("**", "").replace("*", "")
+                
+                if clean_line.strip():
+                    cleaned_lines.append(clean_line)
+            
+            final_plan = "\n\n".join(cleaned_lines).strip()
+            
+            # Fallback if empty
+            if not final_plan or len(final_plan) < 50:
+                return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
+            
+            return final_plan
+            
+        except Exception as e:
+            print(f"[DEBUG] Learning plan generation failed: {e}")
+            return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
     
     def _generate_default_strategy(self, topic: str) -> str:
         """Generate a sensible default strategy for any topic."""

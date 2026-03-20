@@ -60,8 +60,25 @@ export const api = {
     const res = await fetch(`${API_URL}/memory/recall?limit=${limit}`);
     return res.json();
   },
+  // UPGRADE: Generate conversation summary
+  async generateSummary(conversation: string): Promise<APIResponse> {
+    const res = await fetch(`${API_URL}/memory/summary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversation })
+    });
+    return res.json();
+  },
 
-
+  // UPGRADE: Download summary as PDF
+  async downloadSummaryPDF(summaryText: string, topicName?: string): Promise<Blob> {
+    const res = await fetch(`${API_URL}/memory/summary/pdf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ summary_text: summaryText, topic_name: topicName || 'learning_summary' })
+    });
+    return res.blob();
+  },
   async logStudySession(session: Record<string, unknown>): Promise<APIResponse> {
     const res = await fetch(`${API_URL}/study/log`, {
       method: 'POST',
