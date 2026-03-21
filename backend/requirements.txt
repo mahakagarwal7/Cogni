@@ -9,3 +9,6 @@ groq==0.13.0
 httpx==0.27.2
 reportlab>=4.0.0
 fpdf2>=2.7.0
+
+
+#enable the mcp tools in the hindsight api settings or else it wont work

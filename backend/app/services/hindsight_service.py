@@ -714,33 +714,120 @@ class HindsightService:
         # No memories found anywhere - return demo response
         return self._get_demo_socratic_response(concept)
     
-    async def recall_all_memories(self, limit: int = 10) -> List[Dict]:
-        """Memory Inspector: Get all memories for transparency."""
-        if not self.api_available or not self.client:
-            return self._get_demo_memories(limit)
-        
-        try:
-            memories = await self.client.recall(
-                bank_id=self.bank_id,
-                query="*",
-                max_tokens=4096
-            )
-            
-            print(f"[SUCCESS] recall_all_memories: Got {len(memories)} results")
-            
-            return [
-                {
-                    "id": m.get("id", f"mem_{i}") if isinstance(m, dict) else f"mem_{i}",
-                    "content": m.get("content", str(m)) if isinstance(m, dict) else str(m),
-                    "timestamp": m.get("timestamp", datetime.now().isoformat()) if isinstance(m, dict) else datetime.now().isoformat(),
-                    "confidence": 0.85
-                }
-                for i, m in enumerate(memories[:limit])
+    async def recall_all_memories(self, limit: int = 10, user_id: Optional[str] = None) -> List[Dict]:
+        """Memory Inspector: Get memories for transparency (optionally user-scoped)."""
+
+        def _safe_ratio(metadata: Dict[str, Any]) -> Optional[float]:
+            ratio = metadata.get("quiz_score_ratio")
+            score = metadata.get("quiz_score")
+            total = metadata.get("quiz_total")
+
+            try:
+                if ratio is not None:
+                    value = float(ratio)
+                    return max(0.0, min(1.0, value))
+                if score is not None and total is not None and float(total) > 0:
+                    value = float(score) / float(total)
+                    return max(0.0, min(1.0, value))
+            except Exception:
+                return None
+
+            return None
+
+        def _safe_confidence(memory: Dict[str, Any], metadata: Dict[str, Any]) -> float:
+            candidates = [
+                metadata.get("data_confidence"),
+                metadata.get("confidence"),
+                memory.get("confidence"),
             ]
-            
-        except Exception as e:
-            print(f"[WARNING] Hindsight recall error: {str(e)}")
-            return self._get_demo_memories(limit)
+            for value in candidates:
+                try:
+                    if value is None:
+                        continue
+                    parsed = float(value)
+                    return max(0.0, min(1.0, parsed))
+                except Exception:
+                    continue
+
+            quiz_ratio = _safe_ratio(metadata)
+            if quiz_ratio is not None:
+                return quiz_ratio
+
+            return 0.85
+
+        def _normalize_memories(raw_memories: List[Any]) -> List[Dict[str, Any]]:
+            normalized: List[Dict[str, Any]] = []
+            for i, memory in enumerate(raw_memories):
+                if not isinstance(memory, dict):
+                    normalized.append(
+                        {
+                            "id": f"mem_{i}",
+                            "content": str(memory),
+                            "timestamp": datetime.now().isoformat(),
+                            "confidence": 0.85,
+                            "metadata": {},
+                            "context": {},
+                            "topic": None,
+                        }
+                    )
+                    continue
+
+                metadata = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
+                context = memory.get("context") if isinstance(memory.get("context"), dict) else {}
+                topic = metadata.get("topic") or metadata.get("concept") or context.get("topic")
+
+                normalized.append(
+                    {
+                        "id": memory.get("id", f"mem_{i}"),
+                        "content": memory.get("content") or memory.get("text") or "",
+                        "timestamp": memory.get("timestamp")
+                        or memory.get("occurred_end")
+                        or memory.get("mentioned_at")
+                        or datetime.now().isoformat(),
+                        "confidence": _safe_confidence(memory, metadata),
+                        "metadata": metadata,
+                        "context": context,
+                        "topic": topic,
+                    }
+                )
+
+            normalized.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+            return normalized[:limit]
+
+        if self.api_available and self.client:
+            try:
+                banks = self._bank_candidates(user_id) if user_id else [self.bank_id]
+                memories: List[Dict[str, Any]] = []
+
+                for bank in banks:
+                    try:
+                        bank_memories = await self.client.recall(
+                            bank_id=bank,
+                            query=(f"user_id {user_id} study quiz feedback topic" if user_id else "*"),
+                            max_tokens=4096,
+                        )
+                        memories.extend(bank_memories)
+                    except Exception as e:
+                        print(f"[WARNING] recall_all_memories failed for bank={bank}: {str(e)}")
+
+                if memories:
+                    print(f"[SUCCESS] recall_all_memories: Got {len(memories)} results")
+                    return _normalize_memories(memories)
+
+            except Exception as e:
+                print(f"[WARNING] Hindsight recall error: {str(e)}")
+
+        # Fallback to local storage when API is unavailable or returns no rows.
+        bank_id = self._user_bank_id(user_id) if user_id else self.bank_id
+        local_rows = (
+            local_memory.get_user_memories(bank_id, user_id, limit=limit)
+            if user_id
+            else local_memory.get_memories(bank_id, limit=limit)
+        )
+        if local_rows:
+            return _normalize_memories(local_rows)
+
+        return self._get_demo_memories(limit)
     
  
     

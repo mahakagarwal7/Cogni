@@ -679,6 +679,8 @@ export default function ChatPage() {
       const response = await api.getUserProgress(userId, currentTopic);
       const progress = (response.data as Record<string, unknown> | undefined) || {};
 
+      const prettyLabel = (value: string) => value.replace(/_/g, " ");
+
       const studiedTopics = Array.isArray(progress.studied_topics)
         ? (progress.studied_topics as string[])
         : [];
@@ -688,30 +690,44 @@ export default function ChatPage() {
       const highConfidenceTopics = Array.isArray(progress.high_confidence_topics)
         ? (progress.high_confidence_topics as string[])
         : [];
+      const weakTopics = Array.isArray(progress.weak_topics)
+        ? (progress.weak_topics as string[])
+        : [];
       const pastMistakes = Array.isArray(progress.past_mistakes)
         ? (progress.past_mistakes as string[])
         : [];
       const improvementScore = Number(progress.improvement_score ?? 0);
-        const studySessionsCount = Number(progress.study_sessions_count ?? 0);
+      const quizAttempts = Number(progress.quiz_attempts ?? 0);
+      const avgQuizScoreRatio = Number(progress.avg_quiz_score_ratio ?? 0);
+      const quizImprovementScore = Number(progress.quiz_improvement_score ?? 0);
+      const studySessionsCount = Number(progress.study_sessions_count ?? 0);
       const topicLabel = currentTopic ? currentTopic.replace(/_/g, " ") : "Overall";
 
       const studiedTopicsText = studiedTopics.length
-        ? studiedTopics.map((topic) => `• ${topic.replace(/_/g, " ")}`).join("\n")
+        ? studiedTopics.map((topic) => `• ${prettyLabel(topic)}`).join("\n")
         : "• No topics studied yet";
       
       const recentTopicsText = recentTopics.length
-        ? recentTopics.map((topic) => `• ${topic.replace(/_/g, " ")}`).join("\n")
+        ? recentTopics.map((topic) => `• ${prettyLabel(topic)}`).join("\n")
         : "• Get started by exploring a topic";
       
       const masteredTopicsText = highConfidenceTopics.length
-        ? highConfidenceTopics.map((topic) => `✓ ${topic.replace(/_/g, " ")}`).join("\n")
+        ? highConfidenceTopics.map((topic) => `✓ ${prettyLabel(topic)}`).join("\n")
         : "• Keep studying to master topics";
 
+      const weakTopicsText = weakTopics.length
+        ? weakTopics.map((topic) => `• ${prettyLabel(topic)}`).join("\n")
+        : "• No weak topic trend detected yet";
+
       const pastMistakesText = pastMistakes.length
-        ? pastMistakes.map((item) => `• ${item.replace(/_/g, " ")}`).join("\n")
+        ? pastMistakes.map((item) => `• ${prettyLabel(item)}`).join("\n")
         : "• No repeated mistakes detected";
 
-  const wowMessage = `📊 **Your Learning Journey**\n\n**What You've Studied** (${studySessionsCount} sessions)\n${studiedTopicsText}\n\n**Recently Explored**\n${recentTopicsText}\n\n**Topics You're Mastering** ⭐\n${masteredTopicsText}\n\n**Progress Trend**\n${improvementScore > 0 ? "📈 Improving: +" : improvementScore < 0 ? "📉 Declining: " : "→ Steady: "}${Math.abs(improvementScore).toFixed(1)}%\n\n**Focus Areas**\n${pastMistakesText}`;
+      const quizScorePercent = quizAttempts > 0
+        ? `${(Math.max(0, Math.min(1, avgQuizScoreRatio)) * 100).toFixed(1)}%`
+        : "N/A";
+
+      const wowMessage = `📊 **Your Learning Journey (${topicLabel})**\n\n**What You've Studied** (${studySessionsCount} sessions)\n${studiedTopicsText}\n\n**Recently Explored**\n${recentTopicsText}\n\n**Topics You're Mastering** ⭐\n${masteredTopicsText}\n\n**Weak Topics to Revisit**\n${weakTopicsText}\n\n**Progress Trend**\n${improvementScore > 0 ? "📈 Improving: +" : improvementScore < 0 ? "📉 Declining: " : "→ Steady: "}${Math.abs(improvementScore).toFixed(1)}%\n\n**Quiz Performance (Hindsight)**\n• Attempts tracked: ${quizAttempts}\n• Average score: ${quizScorePercent}\n• Quiz trend: ${quizImprovementScore > 0 ? `📈 +${quizImprovementScore.toFixed(1)}%` : quizImprovementScore < 0 ? `📉 ${quizImprovementScore.toFixed(1)}%` : "→ Steady"}\n\n**Focus Areas**\n${pastMistakesText}`;
 
       setMessages((prev) => [
         ...prev,

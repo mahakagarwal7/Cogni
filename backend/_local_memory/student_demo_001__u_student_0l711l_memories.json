@@ -1,0 +1,173 @@
+[
+  {
+    "id": "0_1774086225880",
+    "content": "Student hit confusion again about Linear Programming. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Linear Programming",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:13:44.285389",
+      "data_confusion_level": "1",
+      "data_confidence": "0.95",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:13:45.880026",
+    "stored_locally": true
+  },
+  {
+    "id": "1_1774086277302",
+    "content": "Quiz session on Linear Programming. Score: 2/3. Mistakes: 1. Time taken: 10s.",
+    "metadata": {
+      "type": "quiz_session",
+      "user_id": "student_0l711l",
+      "topic": "Linear Programming",
+      "quiz_score": 2,
+      "quiz_total": 3,
+      "quiz_score_ratio": 0.667,
+      "quiz_mistakes": "[\"Which method is commonly used to solve linear programming problems with multiple variables?\"]",
+      "weak_area": "Which method is commonly used to solve linear programming problems with multiple variables?",
+      "time_taken_seconds": 10,
+      "error_type": "low_quiz_score"
+    },
+    "timestamp": "2026-03-21T15:14:37.302172",
+    "stored_locally": true
+  },
+  {
+    "id": "2_1774086347741",
+    "content": "Student hit confusion again about Linear equations in 2 variables . Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Linear equations in 2 variables ",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:15:46.176047",
+      "data_confusion_level": "2",
+      "data_confidence": "0.85",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:15:47.741240",
+    "stored_locally": true
+  },
+  {
+    "id": "3_1774087557257",
+    "content": "Student hit confusion again about Induction . Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Induction ",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:35:55.518629",
+      "data_confusion_level": "5",
+      "data_confidence": "0.5",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:35:57.257650",
+    "stored_locally": true
+  },
+  {
+    "id": "4_1774087599646",
+    "content": "Quiz session on Induction. Score: 3/3. Mistakes: 0. Time taken: 6s.",
+    "metadata": {
+      "type": "quiz_session",
+      "user_id": "student_0l711l",
+      "topic": "Induction",
+      "quiz_score": 3,
+      "quiz_total": 3,
+      "quiz_score_ratio": 1.0,
+      "quiz_mistakes": "[]",
+      "weak_area": "none",
+      "time_taken_seconds": 6,
+      "error_type": "quiz_mastery"
+    },
+    "timestamp": "2026-03-21T15:36:39.646588",
+    "stored_locally": true
+  },
+  {
+    "id": "5_1774087698046",
+    "content": "Student hit confusion again about Induction motor. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Induction motor",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:38:16.311598",
+      "data_confusion_level": "5",
+      "data_confidence": "0.5",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:38:18.046564",
+    "stored_locally": true
+  },
+  {
+    "id": "6_1774088247735",
+    "content": "Student hit confusion again about Water cycle. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Water cycle",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:47:26.096975",
+      "data_confusion_level": "3",
+      "data_confidence": "0.75",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:47:27.735873",
+    "stored_locally": true
+  },
+  {
+    "id": "7_1774088444244",
+    "content": "Student hit confusion again about Rag Pipeline. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Rag Pipeline",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T15:50:42.589453",
+      "data_confusion_level": "4",
+      "data_confidence": "0.6",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T15:50:44.244963",
+    "stored_locally": true
+  },
+  {
+    "id": "8_1774091001578",
+    "content": "Student hit confusion again about Bohrs model of atom . Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Bohrs model of atom ",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T16:33:19.809624",
+      "data_confusion_level": "4",
+      "data_confidence": "0.6",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-21T16:33:21.578418",
+    "stored_locally": true
+  },
+  {
+    "id": "9_1774091035076",
+    "content": "Resonance query for Bohrs model of atom: found 5 connections",
+    "metadata": {
+      "user_id": "student_0l711l",
+      "topic": "Bohrs model of atom",
+      "engine_feature": "resonance",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T16:33:53.250782",
+      "data_connections_count": "5",
+      "data_confidence": "0.9",
+      "data_insight": "You might find Bohrs model of atom easier if you revisit Linear Programming first (connection streng"
+    },
+    "timestamp": "2026-03-21T16:33:55.076326",
+    "stored_locally": true
+  }
+]

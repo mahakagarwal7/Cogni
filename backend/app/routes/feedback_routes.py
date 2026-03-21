@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import json
+import re
 from datetime import datetime
 from uuid import uuid4
 
@@ -475,62 +476,193 @@ async def _get_learned_topics_from_hindsight(user_id: str) -> Dict[str, Any]:
         if not hindsight_service.api_available or not hindsight_service.client:
             return {}
 
-        # Recall all user memories to extract study patterns
-        memories = await hindsight_service.recall_all_memories(limit=100)
+        # Recall user-scoped memories to extract study patterns
+        memories = await hindsight_service.recall_all_memories(limit=150, user_id=user_id)
 
         if not memories:
             return {}
 
         topics_studied: Dict[str, Dict[str, Any]] = {}
         study_count = 0
+        quiz_attempts = 0
+        quiz_ratios: List[float] = []
+        quiz_trend_points: List[Dict[str, Any]] = []
+        seen_quiz_points = set()
+        weak_topic_counts: Dict[str, int] = {}
+        mistake_counts: Dict[str, int] = {}
+
+        def _to_ratio(raw_metadata: Dict[str, Any]) -> Optional[float]:
+            ratio = raw_metadata.get("quiz_score_ratio")
+            score = raw_metadata.get("quiz_score")
+            total = raw_metadata.get("quiz_total")
+            try:
+                if ratio is not None:
+                    return max(0.0, min(1.0, float(ratio)))
+                if score is not None and total is not None and float(total) > 0:
+                    return max(0.0, min(1.0, float(score) / float(total)))
+            except Exception:
+                return None
+            return None
 
         for memory in memories:
             if not isinstance(memory, dict):
                 continue
 
-            metadata = memory.get("metadata") or {}
-            if not isinstance(metadata, dict):
-                continue
+            metadata = memory.get("metadata") if isinstance(memory.get("metadata"), dict) else {}
+            context = memory.get("context") if isinstance(memory.get("context"), dict) else {}
+
+            merged: Dict[str, Any] = {}
+            merged.update(context)
+            merged.update(metadata)
 
             # Filter for this user
-            if metadata.get("user_id") and metadata.get("user_id") != user_id:
+            memory_user = str(merged.get("user_id") or "").strip()
+            if memory_user and memory_user != user_id:
                 continue
 
-            content = str(memory.get("content", ""))
+            content = str(memory.get("content") or memory.get("text") or "")
 
             # Extract topic from different sources
-            topic = metadata.get("topic") or metadata.get("concept")
+            topic = merged.get("topic") or merged.get("concept")
 
             if not topic and content:
                 # Try to extract from content text
                 if "topic:" in content.lower():
-                    import re
                     match = re.search(r"topic:\s*([a-zA-Z0-9_\s]+?)(?:\.|,|$)", content, re.IGNORECASE)
                     if match:
                         topic = match.group(1).strip()
 
-            if topic and topic.lower() not in {"general", "unknown", ""}:
+                if not topic:
+                    quiz_topic_match = re.search(
+                        r"quiz\s+session\s+on\s+([a-zA-Z0-9_\-\s]{2,60}?)(?:\s+with\s+|\.|,|$)",
+                        content,
+                        flags=re.IGNORECASE,
+                    )
+                    if quiz_topic_match:
+                        topic = quiz_topic_match.group(1).strip()
+
+                if not topic:
+                    score_topic_match = re.search(
+                        r"on\s+([a-zA-Z0-9_\-\s]{2,60}?)\s+with\s+(?:a\s+)?(?:perfect\s+)?score",
+                        content,
+                        flags=re.IGNORECASE,
+                    )
+                    if score_topic_match:
+                        topic = score_topic_match.group(1).strip()
+
+            if topic and str(topic).strip().lower() not in {"general", "unknown", ""}:
+                topic = str(topic).strip().lower()
+
                 if topic not in topics_studied:
                     topics_studied[topic] = {
                         "count": 0,
-                        "confidence": 0.5,
-                        "last_studied": None
+                        "confidence_sum": 0.0,
+                        "confidence_count": 0,
+                        "last_studied": None,
+                        "quiz_attempts": 0,
+                        "quiz_ratio_sum": 0.0,
                     }
 
                 topics_studied[topic]["count"] += 1
                 study_count += 1
 
                 # Update timestamp
-                if "timestamp" in memory or "occurred_end" in memory:
-                    topics_studied[topic]["last_studied"] = memory.get("timestamp") or memory.get("occurred_end")
+                if "timestamp" in memory or "occurred_end" in memory or "mentioned_at" in memory:
+                    topics_studied[topic]["last_studied"] = (
+                        memory.get("timestamp")
+                        or memory.get("occurred_end")
+                        or memory.get("mentioned_at")
+                    )
 
                 # Update confidence from metadata if available
-                if "data_confidence" in metadata:
+                confidence_candidates = [
+                    merged.get("data_confidence"),
+                    merged.get("confidence"),
+                ]
+                for conf_raw in confidence_candidates:
                     try:
-                        conf = float(metadata["data_confidence"])
-                        topics_studied[topic]["confidence"] = conf
+                        if conf_raw is None:
+                            continue
+                        conf = max(0.0, min(1.0, float(conf_raw)))
+                        topics_studied[topic]["confidence_sum"] += conf
+                        topics_studied[topic]["confidence_count"] += 1
+                        break
                     except Exception:
-                        pass
+                        continue
+
+                ratio_val = _to_ratio(merged)
+                if ratio_val is None and content:
+                    score_match = re.search(r"score\s+of\s+(\d+)\s*/\s*(\d+)", content, re.IGNORECASE)
+                    if not score_match:
+                        score_match = re.search(r"score\s*:\s*(\d+)\s*/\s*(\d+)", content, re.IGNORECASE)
+                    if not score_match:
+                        score_match = re.search(r"score\s+of\s+(\d+)\s+out\s+of\s+(\d+)", content, re.IGNORECASE)
+                    if not score_match:
+                        score_match = re.search(r"scor(?:e|ing)\s+(\d+)\s+out\s+of\s+(\d+)", content, re.IGNORECASE)
+                    if score_match:
+                        try:
+                            score_val = float(score_match.group(1))
+                            total_val = float(score_match.group(2))
+                            ratio_val = (score_val / total_val) if total_val > 0 else None
+                        except Exception:
+                            ratio_val = None
+
+                if ratio_val is None and content and "perfect score" in content.lower():
+                    ratio_val = 1.0
+
+                if ratio_val is not None:
+                    point_timestamp = memory.get("timestamp") or memory.get("occurred_end") or memory.get("mentioned_at") or ""
+                    point_key = f"{topic}|{point_timestamp}|{round(float(ratio_val), 3)}"
+
+                    if point_key in seen_quiz_points:
+                        continue
+                    seen_quiz_points.add(point_key)
+
+                    quiz_attempts += 1
+                    quiz_ratios.append(ratio_val)
+                    quiz_trend_points.append(
+                        {
+                            "timestamp": point_timestamp,
+                            "ratio": ratio_val,
+                        }
+                    )
+
+                    topics_studied[topic]["quiz_attempts"] += 1
+                    topics_studied[topic]["quiz_ratio_sum"] += ratio_val
+
+                    if ratio_val <= 0.67:
+                        weak_topic_counts[topic] = weak_topic_counts.get(topic, 0) + 1
+
+                mistakes_raw = merged.get("quiz_mistakes")
+                if mistakes_raw:
+                    parsed_mistakes: List[str] = []
+                    if isinstance(mistakes_raw, list):
+                        parsed_mistakes = [str(item).strip() for item in mistakes_raw if str(item).strip()]
+                    elif isinstance(mistakes_raw, str):
+                        try:
+                            parsed = json.loads(mistakes_raw)
+                            if isinstance(parsed, list):
+                                parsed_mistakes = [str(item).strip() for item in parsed if str(item).strip()]
+                            elif mistakes_raw.strip():
+                                parsed_mistakes = [mistakes_raw.strip()]
+                        except Exception:
+                            if mistakes_raw.strip():
+                                parsed_mistakes = [mistakes_raw.strip()]
+
+                    for mistake in parsed_mistakes:
+                        mistake_counts[mistake] = mistake_counts.get(mistake, 0) + 1
+
+                weak_area = str(merged.get("weak_area") or "").strip().lower()
+                if not weak_area and content:
+                    weak_area_match = re.search(r"'([^']{2,80})'\s+as\s+(?:a\s+)?weak\s+area", content, re.IGNORECASE)
+                    if not weak_area_match:
+                        weak_area_match = re.search(r"mistake\s+related\s+to\s+the\s+'([^']{2,80})'", content, re.IGNORECASE)
+                    if weak_area_match:
+                        weak_area = weak_area_match.group(1).strip().lower()
+
+                if weak_area and weak_area not in {"none", "unknown", "general"}:
+                    mistake_counts[weak_area] = mistake_counts.get(weak_area, 0) + 1
+                    weak_topic_counts[topic] = weak_topic_counts.get(topic, 0) + 1
 
         # Sort by frequency
         sorted_topics = sorted(
@@ -539,11 +671,66 @@ async def _get_learned_topics_from_hindsight(user_id: str) -> Dict[str, Any]:
             reverse=True
         )
 
+        topic_mastery: Dict[str, float] = {}
+        for topic, stats in sorted_topics:
+            confidence_count = int(stats.get("confidence_count", 0) or 0)
+            confidence_sum = float(stats.get("confidence_sum", 0.0) or 0.0)
+            ratio_attempts = int(stats.get("quiz_attempts", 0) or 0)
+            ratio_sum = float(stats.get("quiz_ratio_sum", 0.0) or 0.0)
+
+            confidence_avg = (confidence_sum / confidence_count) if confidence_count > 0 else 0.0
+            ratio_avg = (ratio_sum / ratio_attempts) if ratio_attempts > 0 else 0.0
+
+            if ratio_attempts > 0 and confidence_count > 0:
+                mastery = (confidence_avg + ratio_avg) / 2.0
+            elif ratio_attempts > 0:
+                mastery = ratio_avg
+            elif confidence_count > 0:
+                mastery = confidence_avg
+            else:
+                mastery = 0.5
+
+            topic_mastery[topic] = round(max(0.0, min(1.0, mastery)), 3)
+
+        high_confidence_topics = [topic for topic, score in topic_mastery.items() if score >= 0.78]
+
+        recent_topics = [
+            t[0]
+            for t in sorted(
+                topics_studied.items(),
+                key=lambda item: str(item[1].get("last_studied") or ""),
+                reverse=True,
+            )[:3]
+        ]
+
+        weak_topics = [
+            topic
+            for topic, _ in sorted(weak_topic_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+
+        quiz_improvement_score = 0.0
+        if len(quiz_trend_points) >= 2:
+            ordered = sorted(quiz_trend_points, key=lambda item: str(item.get("timestamp") or ""))
+            first = float(ordered[0]["ratio"])
+            last = float(ordered[-1]["ratio"])
+            quiz_improvement_score = round((last - first) * 100.0, 2)
+
+        avg_quiz_ratio = round(sum(quiz_ratios) / len(quiz_ratios), 3) if quiz_ratios else 0.0
+        past_mistakes = [
+            issue for issue, _ in sorted(mistake_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+        ]
+
         result = {
             "studied_topics": [t[0] for t in sorted_topics[:10]],
             "study_count": study_count,
-            "recent_topics": [t[0] for t in sorted_topics[:3]],
-            "high_confidence_topics": [t[0] for t in sorted_topics if t[1]["confidence"] >= 0.75]
+            "recent_topics": recent_topics,
+            "high_confidence_topics": high_confidence_topics,
+            "weak_topics": weak_topics,
+            "past_mistakes": past_mistakes,
+            "quiz_attempts": quiz_attempts,
+            "avg_quiz_score_ratio": avg_quiz_ratio,
+            "quiz_improvement_score": quiz_improvement_score,
+            "topic_mastery": topic_mastery,
         }
 
         return result
@@ -643,19 +830,51 @@ async def get_progress(
             if str(n.get("topic", "general")).strip().lower() == topic_lower
         ]
 
+    base_weak_topics = extract_topics(normalized)
+    memory_weak_topics = learned_topics_data.get("weak_topics", []) if isinstance(learned_topics_data.get("weak_topics"), list) else []
+    weak_topics = memory_weak_topics or base_weak_topics
+
+    base_past_mistakes = extract_past_mistakes(normalized)
+    memory_past_mistakes = learned_topics_data.get("past_mistakes", []) if isinstance(learned_topics_data.get("past_mistakes"), list) else []
+    merged_past_mistakes: List[str] = []
+    for item in memory_past_mistakes + base_past_mistakes:
+        item_str = str(item).strip()
+        if not item_str:
+            continue
+        if item_str.lower() in {m.lower() for m in merged_past_mistakes}:
+            continue
+        merged_past_mistakes.append(item_str)
+
+    confidence_improvement = calculate_improvement(normalized)
+    quiz_improvement = learned_topics_data.get("quiz_improvement_score")
+    quiz_attempts = int(learned_topics_data.get("quiz_attempts", 0) or 0)
+    if isinstance(quiz_improvement, (int, float)) and quiz_attempts > 0:
+        # Prefer quiz-grounded trend; blend with confidence trend when both exist.
+        improvement_score = (
+            round((0.7 * float(quiz_improvement)) + (0.3 * confidence_improvement), 2)
+            if normalized
+            else round(float(quiz_improvement), 2)
+        )
+    else:
+        improvement_score = confidence_improvement
+
     return APIResponse(
         status="success",
         data={
             "user_id": user_id,
             "topic": topic or "all",
-            "weak_topics": extract_topics(normalized),
+            "weak_topics": weak_topics,
             "studied_topics": studied_topics,
             "recent_topics": learned_topics_data.get("recent_topics", []),
             "high_confidence_topics": learned_topics_data.get("high_confidence_topics", []),
-            "improvement_score": calculate_improvement(normalized),
-            "past_mistakes": extract_past_mistakes(normalized),
+            "improvement_score": improvement_score,
+            "past_mistakes": merged_past_mistakes[:5],
             "insights_count": len(normalized),
             "study_sessions_count": learned_topics_data.get("study_count", 0),
+            "quiz_attempts": quiz_attempts,
+            "avg_quiz_score_ratio": learned_topics_data.get("avg_quiz_score_ratio", 0.0),
+            "quiz_improvement_score": learned_topics_data.get("quiz_improvement_score", 0.0),
+            "topic_mastery": learned_topics_data.get("topic_mastery", {}),
             "orchestrator_stage": "user_progress_computed",
             # NEW: Guide users to enhanced memory visualizations
             "view_impressive_memory_features": {
