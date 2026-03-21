@@ -15,6 +15,47 @@ class ResonanceEngine:
     def __init__(self, hindsight: HindsightService = hindsight_service):
         self.hindsight = hindsight
         self.llm = llm_service
+
+    def _format_insights(self, insights: List[Dict[str, Any]]) -> str:
+        """Convert user insights into compact prompt context."""
+        if not insights:
+            return "No prior insight history available."
+
+        lines: List[str] = []
+        for row in insights[:5]:
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            topic = data.get("topic", "general")
+            issue = data.get("issue", "unclear_concept")
+            style = data.get("preferred_style", "guided")
+            lines.append(f"- topic={topic}; issue={issue}; preferred_style={style}")
+
+        return "\n".join(lines)
+    
+    async def _retain_interaction(self, content: str, user_id: str, topic: str, engine_feature: str, interaction_data: Dict[str, Any]) -> None:
+        """
+        CRITICAL HELPER: Retain interaction to hindsight memory.
+        Called after EVERY engine interaction to build persistent memory.
+        No errors here should block the main response flow (wrapped in try/except).
+        """
+        try:
+            metadata = {
+                "user_id": user_id,
+                "topic": topic,
+                "engine_feature": engine_feature,
+                "interaction_type": "tutoring_session",
+                "timestamp": str(__import__("datetime").datetime.now().isoformat()),
+                **{f"data_{k}": str(v) for k, v in interaction_data.items()}
+            }
+            
+            # Asynchronously retain without blocking
+            await self.hindsight.retain_study_session(
+                content=content,
+                context=metadata
+            )
+            print(f"✓ [RETAINED] {engine_feature} interaction for user={user_id}, topic={topic}")
+        except Exception as e:
+            # Never block the main flow - just log warnings
+            print(f"⚠ [WARNING] Failed to retain interaction: {str(e)}")
     
     def _get_connection_confidence(self, num_connections: int) -> float:
         """Confidence based on number of connections found."""
@@ -25,12 +66,17 @@ class ResonanceEngine:
         else:
             return 0.70
     
-    async def find_connections(self, topic: str) -> Dict[str, Any]:
+    async def find_connections(self, topic: str, user_id: str = "anonymous") -> Dict[str, Any]:
         """
         Find hidden connections between topics using Groq LLM.
         Returns related topics with connection strengths and explanations.
+        
+        CRITICAL: Automatically retains this interaction to hindsight for future recalls.
         """
         
+        insights = await self.hindsight.get_user_insights(user_id)
+        memory_context = self._format_insights(insights)
+
         # First check if we have hardcoded connections for common topics
         hardcoded = self._get_demo_connections(topic)
         is_hardcoded_real = not any(conn["topic"] == "foundational concepts" for conn in hardcoded[:1])
@@ -42,7 +88,7 @@ class ResonanceEngine:
             print(f"[DEBUG] Resonance: Using hardcoded connections for '{topic}'")
         else:
             # For new topics, use LLM to generate smart connections
-            connections = await self._generate_connections_with_llm(topic)
+            connections = await self._generate_connections_with_llm(topic, memory_context)
             
             if connections and len(connections) > 0:
                 demo_mode = False
@@ -55,7 +101,10 @@ class ResonanceEngine:
         
         insight = self._generate_insight(topic, connections[0]) if connections else None
         
-        return {
+        from uuid import uuid4
+        response_id = str(uuid4())
+        result = {
+            "response_id": response_id,
             "feature": "resonance_detection",
             "topic": topic,
             "confidence": self._get_connection_confidence(len(connections)),
@@ -63,13 +112,37 @@ class ResonanceEngine:
             "insight": insight,
             "demo_mode": demo_mode
         }
+        
+        # ⚡ CRITICAL: Retain this interaction to hindsight for future recalls
+        await self._retain_interaction(
+            content=f"Resonance query for {topic}: found {len(connections)} connections",
+            user_id=user_id,
+            topic=topic,
+            engine_feature="resonance",
+            interaction_data={
+                "connections_count": len(connections),
+                "confidence": result["confidence"],
+                "insight": str(insight)[:100] if insight else ""
+            }
+        )
+        
+        return result
     
-    async def _generate_connections_with_llm(self, topic: str) -> List[Dict[str, Any]]:
+    async def _generate_connections_with_llm(self, topic: str, memory_context: str = "") -> List[Dict[str, Any]]:
         """
         Use Groq LLM to generate 5 meaningful related topics with detailed connections.
         Returns structured connections with strength, reasoning, and detailed explanation.
         """
-        prompt = f"""TASK: Suggest 5 RELATED TOPICS for learning "{topic}"
+        prompt = f"""User history:
+    {memory_context}
+
+    Current question:
+    Find hidden conceptual connections for {topic}.
+
+    Instruction:
+    Adapt explanation based on user's past struggles.
+
+    TASK: Suggest 5 RELATED TOPICS for learning "{topic}"
 
 CRITICAL: Output ONLY the topics. NO planning, NO thinking, NO explanations about how to explain, NO preamble.
 
@@ -167,7 +240,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             print(f"[DEBUG] Resonance LLM generation failed: {e}")
             return []
     
-    async def _find_graph_connections(self, topic: str) -> List[Dict[str, Any]]:
+    async def _find_graph_connections(self, topic: str, memory_context: str = "") -> List[Dict[str, Any]]:
         """
         Query Hindsight using graph strategy to find conceptually related topics.
         Uses LLM to extract meaningful connections from Hindsight results.
@@ -192,7 +265,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
                 return []
             
             # Use LLM to extract meaningful connections from raw Hindsight data
-            connections = await self._extract_connections_with_llm(topic, results)
+            connections = await self._extract_connections_with_llm(topic, results, memory_context)
             
             if connections and len(connections) > 0:
                 print(f"[DEBUG] Resonance: LLM found {len(connections)} real connections")
@@ -204,7 +277,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             print(f"[DEBUG] Resonance: Hindsight API call failed: {e}")
             return []
     
-    async def _extract_connections_with_llm(self, current_topic: str, hindsight_results: List) -> List[Dict[str, Any]]:
+    async def _extract_connections_with_llm(self, current_topic: str, hindsight_results: List, memory_context: str = "") -> List[Dict[str, Any]]:
         """
         Use Groq LLM to analyze Hindsight results and extract meaningful topic connections.
         """
@@ -222,7 +295,16 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             
             results_text += f"{i+1}. {content}\n"
         
-        prompt = f"""I studied "{current_topic}" and here are related study memories from my past:
+        prompt = f"""User history:
+    {memory_context}
+
+    Current question:
+    Extract related topics for {current_topic}.
+
+    Instruction:
+    Adapt explanation based on user's past struggles.
+
+    I studied "{current_topic}" and here are related study memories from my past:
 
 MEMORIES:
 {results_text}

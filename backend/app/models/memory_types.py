@@ -71,3 +71,55 @@ class APIResponse(BaseModel):
     data: Optional[dict] = None
     message: Optional[str] = None
     demo_mode: bool = False
+
+
+class InteractionRecord(BaseModel):
+    """
+    Structured interaction schema for orchestration memory.
+    """
+    interaction_id: str = Field(..., description="Unique interaction id")
+    user_id: str = Field(..., description="User identifier")
+    query: str = Field(..., description="User query text")
+    response: str = Field(..., description="Assistant response text")
+    engine_used: str = Field(..., description="Engine selected by orchestrator")
+    timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+class FeedbackRecord(BaseModel):
+    """
+    Structured feedback schema linked to one interaction.
+    """
+    interaction_id: str = Field(..., description="Linked interaction id")
+    understood: bool = Field(..., description="Whether user understood the response")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="User confidence score")
+    feedback_text: str = Field(..., description="Raw user feedback text")
+
+
+class InsightRecord(BaseModel):
+    """
+    Structured insight schema stored in memory for future improvements.
+    """
+    user_id: str = Field(..., description="User identifier")
+    topic: str = Field(..., description="Topic associated with the issue")
+    issue: str = Field(..., description="Core issue inferred from feedback")
+    preferred_style: str = Field(..., description="Preferred explanation style")
+    confidence_score: float = Field(..., ge=0.0, le=1.0, description="Insight confidence")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class QuizQuestion(BaseModel):
+    id: int = Field(..., ge=1, description="Question index")
+    question: str = Field(..., description="Quiz question text")
+    expected_answer: str = Field(..., description="Reference answer")
+
+
+class QuizSubmission(BaseModel):
+    user_id: str = Field("student", description="User identifier")
+    topic: str = Field(..., description="Quiz topic")
+    questions: List[str] = Field(default_factory=list)
+    student_answers: List[str] = Field(default_factory=list)
+    correct_answers: List[str] = Field(default_factory=list)
+    score: Optional[int] = Field(None, ge=0, description="Correct answers count")
+    total_questions: Optional[int] = Field(None, ge=1)
+    mistakes: Optional[List[str]] = Field(default_factory=list)
+    time_taken_seconds: Optional[int] = Field(None, ge=0)

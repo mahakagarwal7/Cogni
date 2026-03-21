@@ -5,8 +5,10 @@
 import os
 from groq import Groq
 from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(BACKEND_ROOT / ".env")
 
 
 class LLMService:

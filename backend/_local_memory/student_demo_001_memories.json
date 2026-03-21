@@ -1,0 +1,66 @@
+[
+  {
+    "id": "0_1774072842490",
+    "content": "User response to Socratic question about machine_learning",
+    "metadata": {
+      "user_id": "test_user",
+      "topic": "machine_learning",
+      "engine_feature": "socratic_reflection",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T11:30:41.328317",
+      "data_previous_question": "What have you heard",
+      "data_user_response": "i have heard of it in ML",
+      "data_response_type": "has_knowledge"
+    },
+    "timestamp": "2026-03-21T11:30:42.490619",
+    "stored_locally": true
+  },
+  {
+    "id": "1_1774072914051",
+    "content": "User response to Socratic question about calculus",
+    "metadata": {
+      "user_id": "stud_0",
+      "topic": "calculus",
+      "engine_feature": "socratic_reflection",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T11:31:52.477960",
+      "data_previous_question": "What have you heard",
+      "data_user_response": "I know derivatives",
+      "data_response_type": "has_knowledge"
+    },
+    "timestamp": "2026-03-21T11:31:54.051505",
+    "stored_locally": true
+  },
+  {
+    "id": "2_1774072923321",
+    "content": "User response to Socratic question about calculus",
+    "metadata": {
+      "user_id": "stud_1",
+      "topic": "calculus",
+      "engine_feature": "socratic_reflection",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T11:32:01.562274",
+      "data_previous_question": "What have you heard",
+      "data_user_response": "I know derivatives",
+      "data_response_type": "has_knowledge"
+    },
+    "timestamp": "2026-03-21T11:32:03.321547",
+    "stored_locally": true
+  },
+  {
+    "id": "3_1774073211380",
+    "content": "Archaeology query for nuclear fission  at confusion level 4",
+    "metadata": {
+      "user_id": "student",
+      "topic": "nuclear fission ",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-21T11:36:49.678563",
+      "data_confusion_level": "4",
+      "data_confidence": "0.6",
+      "data_similar_moments": "3"
+    },
+    "timestamp": "2026-03-21T11:36:51.380577",
+    "stored_locally": true
+  }
+]

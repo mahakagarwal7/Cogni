@@ -2,7 +2,7 @@
 from app.services.hindsight_service import HindsightService, hindsight_service
 from app.services.llm_service import llm_service
 from app.models.memory_types import StudySession
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 class ArchaeologyEngine:
     """
@@ -29,6 +29,47 @@ class ArchaeologyEngine:
             return 0.60
         else:  # 5
             return 0.50
+    
+    async def _retain_interaction(self, content: str, user_id: str, topic: str, engine_feature: str, interaction_data: Dict[str, Any]) -> None:
+        """
+        CRITICAL HELPER: Retain interaction to hindsight memory.
+        Called after EVERY engine interaction to build persistent memory.
+        No errors here should block the main response flow (wrapped in try/except).
+        """
+        try:
+            metadata = {
+                "user_id": user_id,
+                "topic": topic,
+                "engine_feature": engine_feature,
+                "interaction_type": "tutoring_session",
+                "timestamp": str(__import__("datetime").datetime.now().isoformat()),
+                **{f"data_{k}": str(v) for k, v in interaction_data.items()}
+            }
+            
+            # Asynchronously retain without blocking
+            await self.hindsight.retain_study_session(
+                content=content,
+                context=metadata
+            )
+            print(f"✓ [RETAINED] {engine_feature} interaction for user={user_id}, topic={topic}")
+        except Exception as e:
+            # Never block the main flow - just log warnings
+            print(f"⚠ [WARNING] Failed to retain interaction: {str(e)}")
+
+    def _format_insights(self, insights: List[Dict[str, Any]]) -> str:
+        """Convert user insights into compact prompt context."""
+        if not insights:
+            return "No prior insight history available."
+
+        lines: List[str] = []
+        for row in insights[:5]:
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            topic = data.get("topic", "general")
+            issue = data.get("issue", "unclear_concept")
+            style = data.get("preferred_style", "guided")
+            lines.append(f"- topic={topic}; issue={issue}; preferred_style={style}")
+
+        return "\n".join(lines)
     
     def _build_explanation_prompt(self, topic: str, confusion_level: int) -> tuple[str, str]:
         """
@@ -330,23 +371,38 @@ Begin the explanation directly without any preamble. Only include the actual exp
         
         return False
     
-    async def find_past_struggles(self, topic: str, confusion_level: int, days: int = 30) -> Dict[str, Any]:
+    async def find_past_struggles(self, topic: str, confusion_level: int, days: int = 30, user_id: str = "anonymous") -> Dict[str, Any]:
         """
         Main method: Find similar confusion moments + what helped, with LLM-generated recommendation and adaptive explanation.
+        
+        CRITICAL: Automatically retains this interaction to hindsight for future recalls.
         """
         # Call core service to find historical struggles
         result = await self.hindsight.recall_temporal_archaeology(
             topic=topic,
             confusion_level=confusion_level,
-            days=days
+            days=days,
+            user_id=user_id,
         )
+
+        insights = await self.hindsight.get_user_insights(user_id)
+        memory_context = self._format_insights(insights)
         
         # Use LLM to enhance recommendation only if we have helpful hints to base it on
         what_helped = result.get("what_helped_before", [])
         if what_helped and any(h.get("hint_used") for h in what_helped):
             hints_summary = "\n".join([f"- {h.get('hint_used', 'unknown')}" for h in what_helped[:3] if h.get("hint_used")])
             if hints_summary:
-                prompt = f"""Based on what helped before for {topic}:
+                prompt = f"""User history:
+{memory_context}
+
+Current question:
+How to improve understanding of {topic} based on what helped before.
+
+Instruction:
+Adapt explanation based on user's past struggles.
+
+Based on what helped before for {topic}:
 
 {hints_summary}
 
@@ -368,6 +424,16 @@ Provide ONE specific actionable step. Respond with ONLY the step in 1 sentence."
         # Generate adaptive explanation based on confusion level
         try:
             explanation_prompt, audience_type = self._build_explanation_prompt(topic, confusion_level)
+            explanation_prompt = f"""User history:
+{memory_context}
+
+Current question:
+Explain {topic} at confusion level {confusion_level}.
+
+Instruction:
+Adapt explanation based on user's past struggles.
+
+{explanation_prompt}"""
             explanation_raw = self.llm.generate(explanation_prompt, max_tokens=1200, temperature=0.5)
             # Clean the explanation using same logic as recommendation
             explanation = self._clean_explanation_text(explanation_raw)
@@ -382,13 +448,41 @@ Provide ONE specific actionable step. Respond with ONLY the step in 1 sentence."
             result["explanation_audience"] = "fallback"
         
         # Add feature-specific analysis with single confidence based on confusion_level
-        return {
+        from uuid import uuid4
+        response_id = str(uuid4())
+        final_result = {
+            "response_id": response_id,
             "feature": "temporal_archaeology",
             "query": {"topic": topic, "confusion_level": confusion_level},
             "confidence": self._calculate_confidence_from_confusion(confusion_level),
             "result": result,
             "actionable": len(what_helped) > 0
         }
+        
+        # ⚡ CRITICAL: Retain this interaction to hindsight for future recalls
+        suggested_strategy = "visual_analogy"
+        if what_helped and isinstance(what_helped, list):
+            first_hint = what_helped[0].get("hint_used") if isinstance(what_helped[0], dict) else None
+            if first_hint:
+                suggested_strategy = str(first_hint)
+
+        await self._retain_interaction(
+            content=(
+                f"Student hit confusion again about {topic}. "
+                f"Previous strategy [{suggested_strategy}] suggested."
+            ),
+            user_id=user_id,
+            topic=topic,
+            engine_feature="archaeology",
+            interaction_data={
+                "confusion_level": confusion_level,
+                "confidence": final_result["confidence"],
+                "similar_moments": result.get("similar_moments", 0),
+                "suggested_strategy": suggested_strategy,
+            }
+        )
+        
+        return final_result
     
     async def log_study_session(self, session: StudySession) -> Dict[str, Any]:
         """

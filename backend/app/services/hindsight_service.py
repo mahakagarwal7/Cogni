@@ -6,13 +6,21 @@ Unified interface for all memory operations with real API + demo fallback.
 import os
 import asyncio
 import httpx
+import json
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 from datetime import datetime
+from pathlib import Path
 
-# CRITICAL: Load environment variables BEFORE any client initialization
-load_dotenv()
+# CRITICAL: Load environment variables BEFORE any client initialization.
+# Use backend-root relative path to avoid cwd-dependent fallback behavior.
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(BACKEND_ROOT / ".env")
+
+# Import local fallback for when Hindsight API is unavailable
+from app.services.local_memory_fallback import local_memory
 
 
 class _HindsightClient:
@@ -80,17 +88,33 @@ class _HindsightClient:
     
     async def reflect(self, bank_id: str, query: str, budget: str = 'low', context: Optional[str] = None):
         """Reflect on memories to create synthesized insights."""
-        url = f'{self.base_url}/v1/default/banks/{bank_id}/memories/reflect'
         payload = {
             'query': query,
             'budget': budget
         }
         if context:
             payload['context'] = context
+        urls = [
+            f'{self.base_url}/v1/default/banks/{bank_id}/memories/reflect',
+            f'{self.base_url}/v1/default/banks/{bank_id}/reflect',
+        ]
+
+        last_error: Optional[Exception] = None
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, headers=self.headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+            for url in urls:
+                try:
+                    response = await client.post(url, headers=self.headers, json=payload)
+                    if response.status_code in {404, 405}:
+                        continue
+                    response.raise_for_status()
+                    return response.json()
+                except Exception as e:
+                    last_error = e
+                    continue
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Reflect failed for all known endpoint variants")
 
 
 
@@ -109,22 +133,24 @@ class HindsightService:
         # Load and CLEAN all environment values aggressively
         raw_key = os.getenv("HINDSIGHT_API_KEY")
         raw_url = os.getenv("HINDSIGHT_BASE_URL")
-        raw_bank = os.getenv("HINDSIGHT_BANK_ID")
         raw_global = os.getenv("HINDSIGHT_GLOBAL_BANK")
+        raw_user_bank_prefix = os.getenv("HINDSIGHT_USER_BANK_PREFIX")
         
         # DEBUG: Print RAW values with repr() to reveal hidden characters
         print("\n" + "="*70)
         print("[DEBUG] HindsightService - RAW ENV LOADING DEBUG")
         print(f"   raw_key repr: {repr(raw_key)}")
         print(f"   raw_url repr: {repr(raw_url)}")
-        print(f"   raw_bank repr: {repr(raw_bank)}")
+        print(f"   raw_user_bank_prefix repr: {repr(raw_user_bank_prefix)}")
         print(f"   raw_global repr: {repr(raw_global)}")
         print("="*70 + "\n")
         
         # Clean values: strip whitespace, handle None defaults
         self.api_key = (raw_key or "").strip()
         self.base_url = (raw_url or "https://api.hindsight.vectorize.io").strip().rstrip('/')
-        self.bank_id = (raw_bank or "student_demo_001").strip()
+        # Backward-compatible default keeps existing bank naming stable if env var is removed.
+        self.user_bank_prefix = (raw_user_bank_prefix or "student_demo_001").strip()
+        self.bank_id = self.user_bank_prefix
         self.global_bank = (raw_global or "global_wisdom_public").strip()
         
         # DEBUG: Print CLEANED values
@@ -132,7 +158,7 @@ class HindsightService:
         print("[DEBUG] HindsightService - CLEANED VALUES")
         print(f"   api_key: {'[SET]' if self.api_key else '[MISSING]'} ({len(self.api_key)} chars)")
         print(f"   base_url: [{self.base_url}] ({len(self.base_url)} chars)")
-        print(f"   bank_id: [{self.bank_id}]")
+        print(f"   user_bank_prefix: [{self.user_bank_prefix}]")
         print(f"   global_bank: [{self.global_bank}]")
         print(f"   -> Contains 'hhindsight' typo: {'hhindsight' in self.base_url.lower()}")
         print(f"   -> Ends with slash: {self.base_url.endswith('/')}")
@@ -160,64 +186,442 @@ class HindsightService:
                 self.client = None
         
         print(f"[INIT] HindsightService initialized: api_available={self.api_available}\n")
+
+    def _sanitize_user_id(self, user_id: Optional[str]) -> str:
+        raw = (user_id or "anonymous").strip().lower()
+        cleaned = re.sub(r"[^a-z0-9_-]", "-", raw)
+        cleaned = re.sub(r"-+", "-", cleaned).strip("-")
+        return cleaned[:32] or "anonymous"
+
+    def _user_bank_id(self, user_id: Optional[str]) -> str:
+        base = (self.user_bank_prefix or "student_demo_001").strip()
+        safe_user = self._sanitize_user_id(user_id)
+        bank = f"{base}__u_{safe_user}"
+        return bank[:64]
+
+    def _bank_candidates(self, user_id: Optional[str]) -> List[str]:
+        if not user_id:
+            return [self.bank_id]
+        user_bank = self._user_bank_id(user_id)
+        # Strict isolation: never mix shared-bank memories into per-user reasoning paths.
+        # This avoids unrelated historical data contaminating progress, killer prompts, and shadow signals.
+        return [user_bank]
+
+    def _extract_reflect_insight(self, payload: Any) -> str:
+        """Extract a readable insight sentence from reflect payloads with varying shapes."""
+        if payload is None:
+            return ""
+
+        if isinstance(payload, str):
+            text = payload.strip()
+            return text if text else ""
+
+        if isinstance(payload, list):
+            for item in payload:
+                text = self._extract_reflect_insight(item)
+                if text:
+                    return text
+            return ""
+
+        if isinstance(payload, dict):
+            preferred_keys = [
+                "insight",
+                "summary",
+                "response",
+                "analysis",
+                "text",
+                "content",
+                "message",
+            ]
+            for key in preferred_keys:
+                if key in payload:
+                    text = self._extract_reflect_insight(payload.get(key))
+                    if text:
+                        return text
+
+            # If no preferred key exists, inspect nested values.
+            for value in payload.values():
+                text = self._extract_reflect_insight(value)
+                if text:
+                    return text
+
+        return ""
+
+    def _is_low_signal_reflect(self, text: str) -> bool:
+        if not text or len(text.strip()) < 20:
+            return True
+        lower = text.lower()
+        low_signal_markers = [
+            "i am sorry",
+            "i'm sorry",
+            "do not have enough information",
+            "don't have enough information",
+            "unable to determine",
+            "insufficient information",
+        ]
+        return any(marker in lower for marker in low_signal_markers)
     
    
     
     async def retain_study_session(self, content: str, context: Dict[str, Any]) -> Dict:
-        """Save a study session to memory."""
-        if not self.api_available or not self.client:
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": True}
+        """Save a study session to memory. Falls back to local storage if API unavailable."""
+        user_id = str((context or {}).get("user_id") or "anonymous")
+        banks = self._bank_candidates(user_id)
+
+        if self.api_available and self.client:
+            for bank in banks:
+                try:
+                    await self.client.retain(
+                        bank_id=bank,
+                        content=content,
+                        metadata=context,
+                        timestamp=datetime.now()
+                    )
+                    print(f"[SUCCESS] retain_study_session to Hindsight API bank={bank}")
+                    return {"status": "success", "bank_id": bank, "demo_mode": False, "stored_location": "hindsight"}
+                except Exception as e:
+                    print(f"[WARNING] Hindsight API failed for bank={bank}: {str(e)}")
+                    continue
         
-        try:
-            # Directly await the async client method
-            response = await self.client.retain(
-                bank_id=self.bank_id,
-                content=content,
-                metadata=context,
-                timestamp=datetime.now()
-            )
-            print(f"[SUCCESS] retain_study_session")
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": False}
-            
-        except Exception as e:
-            print(f"[WARNING] Hindsight retain error: {str(e)}")
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": True}
+        # Fallback: Save to local storage
+        print(f"[INFO] Falling back to local storage for session retention")
+        local_result = local_memory.save_interaction(self._user_bank_id(user_id), content, context)
+        return {
+            "status": "success",
+            "bank_id": self._user_bank_id(user_id),
+            "demo_mode": False,
+            "stored_location": "local",
+            "local_result": local_result
+        }
     
     async def retain_misconception(self, content: str, context: Dict[str, Any]) -> Dict:
-        """Save a misconception for Socratic Ghost."""
-        if not self.api_available or not self.client:
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": True}
+        """Save a misconception for Socratic Ghost. Falls back to local storage if API unavailable."""
+        user_id = str((context or {}).get("user_id") or "anonymous")
+        banks = self._bank_candidates(user_id)
+
+        if self.api_available and self.client:
+            for bank in banks:
+                try:
+                    await self.client.retain(
+                        bank_id=bank,
+                        content=content,
+                        metadata=context,
+                        timestamp=datetime.now()
+                    )
+                    print(f"[SUCCESS] retain_misconception to Hindsight API bank={bank}")
+                    return {"status": "success", "bank_id": bank, "demo_mode": False, "stored_location": "hindsight"}
+                except Exception as e:
+                    print(f"[WARNING] Hindsight API failed for bank={bank}: {str(e)}")
+                    continue
         
+        # Fallback: Save to local storage
+        print(f"[INFO] Falling back to local storage for misconception retention")
+        local_result = local_memory.save_interaction(self._user_bank_id(user_id), content, context)
+        return {
+            "status": "success",
+            "bank_id": self._user_bank_id(user_id),
+            "demo_mode": False,
+            "stored_location": "local",
+            "local_result": local_result
+        }
+
+    async def store_insight(self, user_id: str, insight: Dict[str, Any]) -> Dict:
+        """
+        Store structured insight in memory.
+
+        Equivalent feature mapping to requested behavior:
+        hindsight_client.insert({"user_id": user_id, "type": "insight", "data": insight})
+        """
+        if not self.api_available or not self.client:
+            return {
+                "status": "success",
+                "bank_id": self.bank_id,
+                "demo_mode": True,
+                "stored": {
+                    "user_id": user_id,
+                    "type": "insight",
+                    "data": insight,
+                },
+            }
+
         try:
-            response = await self.client.retain(
-                bank_id=self.bank_id,
-                content=content,
-                metadata=context,
-                timestamp=datetime.now()
-            )
-            print(f"[SUCCESS] retain_misconception")
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": False}
-            
+            metadata = {
+                "type": "insight",
+                "user_id": user_id,
+                "insight_data": json.dumps(insight),
+            }
+            content = f"Insight for user={user_id}"
+
+            for bank in self._bank_candidates(user_id):
+                try:
+                    await self.client.retain(
+                        bank_id=bank,
+                        content=content,
+                        metadata=metadata,
+                        timestamp=datetime.now(),
+                    )
+                    print(f"[SUCCESS] store_insight: user_id={user_id}, bank={bank}")
+                    return {"status": "success", "bank_id": bank, "demo_mode": False}
+                except Exception as e:
+                    print(f"[WARNING] store_insight failed for bank={bank}: {str(e)}")
+                    continue
+
+            raise RuntimeError("store_insight failed on all bank candidates")
+
         except Exception as e:
-            print(f"[WARNING] Hindsight retain error: {str(e)}")
-            return {"status": "success", "bank_id": self.bank_id, "demo_mode": True}
+            print(f"[WARNING] Hindsight store_insight error: {str(e)}")
+            return {
+                "status": "success",
+                "bank_id": self.bank_id,
+                "demo_mode": True,
+                "stored": {
+                    "user_id": user_id,
+                    "type": "insight",
+                    "data": insight,
+                },
+            }
+
+    async def get_user_insights(self, user_id: str) -> List[Dict[str, Any]]:
+        """
+        Retrieve user insights from memory.
+        Falls back to local storage if Hindsight API unavailable.
+
+        Equivalent feature mapping to requested behavior:
+        hindsight_client.query({"user_id": user_id, "type": "insight"})
+        """
+        if self.api_available and self.client:
+            try:
+                insights: List[Dict[str, Any]] = []
+                for bank in self._bank_candidates(user_id):
+                    try:
+                        memories = await self.client.recall(
+                            bank_id=bank,
+                            query=f"insight user {user_id}",
+                            max_tokens=4096,
+                        )
+                    except Exception as e:
+                        print(f"[WARNING] get_user_insights recall failed for bank={bank}: {str(e)}")
+                        continue
+
+                    for m in memories:
+                        if not isinstance(m, dict):
+                            continue
+
+                        metadata = m.get("metadata") or {}
+                        if not isinstance(metadata, dict):
+                            continue
+
+                        if str(metadata.get("type", "")) != "insight":
+                            continue
+                        if str(metadata.get("user_id", "")) != user_id:
+                            continue
+
+                        raw_data = metadata.get("insight_data", "{}")
+                        try:
+                            parsed_data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                        except Exception:
+                            parsed_data = {"raw": str(raw_data)}
+
+                        insights.append(
+                        {
+                            "id": m.get("id"),
+                            "timestamp": m.get("timestamp") or m.get("occurred_end") or m.get("mentioned_at"),
+                            "user_id": user_id,
+                            "type": "insight",
+                            "data": parsed_data,
+                        }
+                    )
+
+                if insights:
+                    print(f"[SUCCESS] get_user_insights: user_id={user_id}, count={len(insights)}")
+                    return insights
+
+                # No first-class insight records found. Fall through to user-memory-derived insights
+                # so topic-level progress remains meaningful instead of always looking identical.
+                print(f"[INFO] No explicit insight records for user={user_id}; deriving from user memories")
+
+                derived_insights: List[Dict[str, Any]] = []
+                for bank in self._bank_candidates(user_id):
+                    try:
+                        derived_memories = await self.client.recall(
+                            bank_id=bank,
+                            query=f"user_id {user_id} topic learning study",
+                            max_tokens=4096,
+                        )
+                    except Exception as e:
+                        print(f"[WARNING] derived insight recall failed for bank={bank}: {str(e)}")
+                        continue
+
+                    for m in derived_memories:
+                        if not isinstance(m, dict):
+                            continue
+
+                        metadata = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+                        if metadata and str(metadata.get("user_id", "")) not in {"", user_id}:
+                            continue
+
+                        content_text = str(m.get("content") or m.get("text") or "")
+
+                        topic_val = (
+                            metadata.get("topic")
+                            or metadata.get("concept")
+                            or "unknown"
+                        )
+
+                        if str(topic_val).strip().lower() in {"", "unknown", "none"} and content_text:
+                            extraction_patterns = [
+                                r"about\s+([a-zA-Z0-9_\-\s]{2,60}?)\s+in\s+the\s+context\s+of",
+                                r"query\s+for\s+([a-zA-Z0-9_\-\s]{2,60}?)(?:\s+at|:|,|\.|\|)",
+                                r"prediction\s+for\s+([a-zA-Z0-9_\-\s]{2,60}?)(?:\s+at|:|,|\.|\|)",
+                                r"response\s+about\s+([a-zA-Z0-9_\-\s]{2,60}?)(?:\s+was|,|\.|\|)",
+                            ]
+
+                            for pattern in extraction_patterns:
+                                match = re.search(pattern, content_text, flags=re.IGNORECASE)
+                                if match:
+                                    candidate = match.group(1).strip()
+                                    # Keep only concise noun-phrase-like topics.
+                                    if 1 <= len(candidate.split()) <= 5:
+                                        topic_val = candidate
+                                        break
+
+                        confidence_val = metadata.get("data_confidence")
+                        if confidence_val is None:
+                            confidence_val = m.get("confidence")
+                        try:
+                            confidence_score = float(confidence_val) if confidence_val is not None else 0.65
+                        except Exception:
+                            confidence_score = 0.65
+
+                        issue_val = metadata.get("data_issue") or metadata.get("engine_feature") or "concept_not_clear"
+                        if issue_val == "concept_not_clear" and content_text:
+                            content_lower = content_text.lower()
+                            if "socratic" in content_lower:
+                                issue_val = "socratic_misconception"
+                            elif "archaeology" in content_lower:
+                                issue_val = "historical_confusion_pattern"
+                            elif "shadow" in content_lower:
+                                issue_val = "predictive_risk_pattern"
+                            elif "resonance" in content_lower:
+                                issue_val = "cross_topic_connection_gap"
+                            elif "contagion" in content_lower:
+                                issue_val = "peer_strategy_gap"
+
+                        derived_insights.append(
+                            {
+                                "id": m.get("id"),
+                                "timestamp": m.get("timestamp") or m.get("occurred_end") or m.get("mentioned_at"),
+                                "user_id": user_id,
+                                "type": "insight",
+                                "data": {
+                                    "issue": str(issue_val),
+                                    "topic": str(topic_val),
+                                    "confidence_score": max(0.0, min(1.0, confidence_score)),
+                                    "preferred_style": "adaptive",
+                                },
+                            }
+                        )
+
+                if derived_insights:
+                    print(f"[SUCCESS] get_user_insights from API memories: user_id={user_id}, count={len(derived_insights)}")
+                    return derived_insights
+
+            except Exception as e:
+                print(f"[WARNING] Hindsight get_user_insights error: {str(e)}")
+        
+        # Fallback 1: Check local storage for user insights
+        print(f"[INFO] Checking local storage for user insights: {user_id}")
+        local_memories = local_memory.get_user_memories(self._user_bank_id(user_id), user_id, limit=50)
+        
+        if local_memories:
+            insights: List[Dict[str, Any]] = []
+            for m in local_memories:
+                metadata = m.get("metadata", {})
+                topic = metadata.get("topic", "unknown")
+                confidence_val = metadata.get("data_confidence")
+                try:
+                    confidence_score = float(confidence_val) if confidence_val is not None else 0.65
+                except Exception:
+                    confidence_score = 0.65
+
+                issue = str(metadata.get("data_issue") or metadata.get("engine_feature") or "concept_not_clear")
+
+                insights.append(
+                    {
+                        "id": m.get("id"),
+                        "timestamp": m.get("timestamp"),
+                        "user_id": user_id,
+                        "type": "insight",
+                        "data": {
+                            "issue": issue,
+                            "topic": topic,
+                            "confidence_score": max(0.0, min(1.0, confidence_score)),
+                            "preferred_style": "adaptive"
+                        },
+                    }
+                )
+            print(f"[SUCCESS] get_user_insights from local storage: user_id={user_id}, count={len(insights)}")
+            return insights
+        
+        # Fallback 2: No memories anywhere - return generic insight WITHOUT demo_mode flag
+        print(f"[INFO] No insights found for {user_id} - returning generic insight")
+        return [
+            {
+                "user_id": user_id,
+                "type": "insight",
+                "data": {
+                    "issue": "none",
+                    "topic": "general",
+                    "preferred_style": "guided",
+                    "confidence_score": 0.5,
+                },
+            }
+        ]
     
   
     
-    async def recall_temporal_archaeology(self, topic: str, confusion_level: int, days: int = 30) -> Dict:
+    async def recall_temporal_archaeology(self, topic: str, confusion_level: int, days: int = 30, user_id: Optional[str] = None) -> Dict:
         """Feature 1: Find similar confusion moments in the past."""
         if not self.api_available or not self.client:
             return self._get_demo_archaeology_response(topic, confusion_level)
         
         try:
             query = f"confusion about {topic} with level {confusion_level} or higher"
+
+            # Backbone synthesis: let Hindsight reflect patterns across sessions.
+            reflect_query = (
+                "What topics does this student consistently struggle with and what comes next? "
+                f"Focus on topic: {topic}."
+            )
+            reflect_insight = ""
+            for bank in self._bank_candidates(user_id):
+                try:
+                    reflect_payload = await self.client.reflect(
+                        bank_id=bank,
+                        query=reflect_query,
+                        budget='mid'
+                    )
+                    reflect_insight = self._extract_reflect_insight(reflect_payload)
+                    if self._is_low_signal_reflect(reflect_insight):
+                        reflect_insight = ""
+                    if reflect_insight:
+                        print(f"[SUCCESS] archaeology reflect synthesis from bank={bank}")
+                        break
+                except Exception as e:
+                    print(f"[WARNING] archaeology reflect failed for bank={bank}: {str(e)}")
             
             # Directly await the async client method (no need for executor)
-            memories = await self.client.recall(
-                bank_id=self.bank_id,
-                query=query,
-                max_tokens=4096
-            )
+            memories: List[Dict[str, Any]] = []
+            for bank in self._bank_candidates(user_id):
+                try:
+                    recall_rows = await self.client.recall(
+                        bank_id=bank,
+                        query=query,
+                        max_tokens=4096
+                    )
+                    memories.extend(recall_rows)
+                except Exception as e:
+                    print(f"[WARNING] recall_temporal_archaeology failed for bank={bank}: {str(e)}")
             
             print(f"[SUCCESS] recall_temporal_archaeology: Got {len(memories)} results")
             
@@ -236,7 +640,8 @@ class HindsightService:
             return {
                 "similar_moments": len(memories),
                 "what_helped_before": helpful,
-                "recommendation": self._generate_recommendation(helpful, topic),
+                "recommendation": reflect_insight or self._generate_recommendation(helpful, topic),
+                "reflect_insight": reflect_insight,
                 "demo_mode": False
             }
             
@@ -244,46 +649,70 @@ class HindsightService:
             print(f"[WARNING] Hindsight recall error: {str(e)}")
             return self._get_demo_archaeology_response(topic, confusion_level)
     
-    async def recall_socratic_history(self, concept: str) -> Dict:
+    async def recall_socratic_history(self, concept: str, user_id: Optional[str] = None) -> Dict:
         """Feature 2: Find past misconceptions about a concept."""
-        if not self.api_available or not self.client:
-            return self._get_demo_socratic_response(concept)
+        if self.api_available and self.client:
+            try:
+                query = f"misconception about {concept}"
+                
+                memories: List[Dict[str, Any]] = []
+                for bank in self._bank_candidates(user_id):
+                    try:
+                        recall_rows = await self.client.recall(
+                            bank_id=bank,
+                            query=query,
+                            max_tokens=4096
+                        )
+                        memories.extend(recall_rows)
+                    except Exception as e:
+                        print(f"[WARNING] recall_socratic_history failed for bank={bank}: {str(e)}")
+                
+                print(f"[SUCCESS] recall_socratic_history: Got {len(memories)} results from Hindsight API")
+                
+                # Safely filter resolved/unresolved - handle None values
+                resolved = []
+                unresolved = []
+                for m in memories:
+                    if not isinstance(m, dict):
+                        unresolved.append(m)
+                        continue
+                    metadata = m.get("metadata")
+                    if isinstance(metadata, dict) and metadata.get("resolved"):
+                        resolved.append(m)
+                    else:
+                        unresolved.append(m)
+                
+                return {
+                    "total_found": len(memories),
+                    "resolved_count": len(resolved),
+                    "unresolved_count": len(unresolved),
+                    "history": [{"content": m.get("content", str(m))} for m in memories[:5]],
+                    "demo_mode": False,
+                    "source": "hindsight"
+                }
+                
+            except Exception as e:
+                print(f"[WARNING] Hindsight API recall failed: {str(e)}")
         
-        try:
-            query = f"misconception about {concept}"
-            
-            memories = await self.client.recall(
-                bank_id=self.bank_id,
-                query=query,
-                max_tokens=4096
-            )
-            
-            print(f"[SUCCESS] recall_socratic_history: Got {len(memories)} results")
-            
-            # Safely filter resolved/unresolved - handle None values
-            resolved = []
-            unresolved = []
-            for m in memories:
-                if not isinstance(m, dict):
-                    unresolved.append(m)
-                    continue
-                metadata = m.get("metadata")
-                if isinstance(metadata, dict) and metadata.get("resolved"):
-                    resolved.append(m)
-                else:
-                    unresolved.append(m)
+        # Fallback: Check local storage
+        print(f"[INFO] Checking local storage for concept: {concept}")
+        local_memories = local_memory.get_topic_memories(self._user_bank_id(user_id), concept, limit=10)
+        
+        if local_memories:
+            resolved = [m for m in local_memories if m.get("metadata", {}).get("resolved")]
+            unresolved = [m for m in local_memories if not m.get("metadata", {}).get("resolved")]
             
             return {
-                "total_found": len(memories),
+                "total_found": len(local_memories),
                 "resolved_count": len(resolved),
                 "unresolved_count": len(unresolved),
-                "history": [{"content": m.get("content", str(m))} for m in memories[:5]],
-                "demo_mode": False
+                "history": [{"content": m.get("content", "No content")} for m in local_memories[:5]],
+                "demo_mode": False,
+                "source": "local_storage"
             }
-            
-        except Exception as e:
-            print(f"[WARNING] Hindsight recall error: {str(e)}")
-            return self._get_demo_socratic_response(concept)
+        
+        # No memories found anywhere - return demo response
+        return self._get_demo_socratic_response(concept)
     
     async def recall_all_memories(self, limit: int = 10) -> List[Dict]:
         """Memory Inspector: Get all memories for transparency."""
@@ -315,29 +744,58 @@ class HindsightService:
     
  
     
-    async def reflect_cognitive_shadow(self, days: int = 7) -> Dict:
+    async def reflect_cognitive_shadow(self, days: int = 7, user_id: Optional[str] = None, current_topic: Optional[str] = None) -> Dict:
         """Feature 3: Synthesize patterns into predictive insights based on conversation history."""
         if not self.api_available or not self.client:
             return self._get_demo_shadow_response()
         
         try:
+            reflect_query = "What topics does this student consistently struggle with and what comes next?"
+            if current_topic:
+                reflect_query += f" Current topic: {current_topic}."
+
+            reflect_insight = ""
+            for bank in self._bank_candidates(user_id):
+                try:
+                    reflect_payload = await self.client.reflect(
+                        bank_id=bank,
+                        query=reflect_query,
+                        budget='mid'
+                    )
+                    reflect_insight = self._extract_reflect_insight(reflect_payload)
+                    if self._is_low_signal_reflect(reflect_insight):
+                        reflect_insight = ""
+                    if reflect_insight:
+                        print(f"[SUCCESS] shadow reflect synthesis from bank={bank}")
+                        break
+                except Exception as e:
+                    print(f"[WARNING] shadow reflect failed for bank={bank}: {str(e)}")
+
             # Query recent study topics from conversation history
-            memories = await self.client.recall(
-                bank_id=self.bank_id,
-                query="study session algorithms concepts learned",
-                max_tokens=4096
-            )
+            memories: List[Dict[str, Any]] = []
+            for bank in self._bank_candidates(user_id):
+                try:
+                    recall_rows = await self.client.recall(
+                        bank_id=bank,
+                        query="study session quiz score mistakes weak area algorithms concepts learned",
+                        max_tokens=4096
+                    )
+                    memories.extend(recall_rows)
+                except Exception as e:
+                    print(f"[WARNING] reflect_cognitive_shadow failed for bank={bank}: {str(e)}")
             
             print(f"[SUCCESS] reflect_cognitive_shadow: Retrieved {len(memories)} memories for analysis")
             
             # Extract topics and confusion patterns from memories
             topics = []
             errors = []
+            quiz_low_topics = []
             for m in memories[:10]:  # Analyze last 10 memories
                 if not isinstance(m, dict):
                     continue
-                content = m.get("content", "")
+                content = str(m.get("content", "") or m.get("text", ""))
                 metadata = m.get("metadata", {})
+                topic = None
                 
                 if isinstance(metadata, dict):
                     topic = metadata.get("topic") or metadata.get("concept")
@@ -346,15 +804,87 @@ class HindsightService:
                     error_type = metadata.get("error_type")
                     if error_type:
                         errors.append(error_type)
+
+                    # Dense quiz signal: topic + score + mistakes informs true weak-area prediction.
+                    quiz_score = metadata.get("quiz_score")
+                    quiz_total = metadata.get("quiz_total")
+                    quiz_ratio = metadata.get("quiz_score_ratio")
+                    try:
+                        if quiz_ratio is not None:
+                            ratio_val = float(quiz_ratio)
+                        elif quiz_score is not None and quiz_total is not None and float(quiz_total) > 0:
+                            ratio_val = float(quiz_score) / float(quiz_total)
+                        else:
+                            ratio_val = None
+                    except Exception:
+                        ratio_val = None
+
+                    if ratio_val is not None and topic:
+                        # Treat rounded 2/3 (0.667) as low score to preserve quiz-signal recall.
+                        if ratio_val <= 0.67:
+                            quiz_low_topics.append(str(topic))
+                            errors.append("low_quiz_score")
+                        elif ratio_val >= 0.9:
+                            errors.append("quiz_mastery")
+
+                # Some recall rows carry quiz info only in free text with null metadata/context.
+                # Parse score/topic directly from text so evidence can still include quiz weakness.
+                quiz_text = content.lower()
+                if "quiz" in quiz_text:
+                    text_topic = None
+                    topic_match = re.search(
+                        r"(?:on|regarding)\s+([a-zA-Z0-9 _-]{2,60}?)(?:\s+with\s+(?:a\s+)?score|[\.,])",
+                        content,
+                        re.IGNORECASE,
+                    )
+                    if topic_match:
+                        text_topic = topic_match.group(1).strip()
+
+                    score_match = re.search(r"score\s+of\s+(\d+)\s*/\s*(\d+)", content, re.IGNORECASE)
+                    if not score_match:
+                        score_match = re.search(r"scor(?:e|ing)\s+(\d+)\s+out\s+of\s+(\d+)", content, re.IGNORECASE)
+
+                    if score_match:
+                        try:
+                            s_val = float(score_match.group(1))
+                            t_val = float(score_match.group(2))
+                            ratio_val = (s_val / t_val) if t_val > 0 else None
+                        except Exception:
+                            ratio_val = None
+
+                        quiz_topic = str(topic or text_topic or current_topic or "").strip()
+                        quiz_topic = re.sub(r"^(on|regarding)\s+", "", quiz_topic, flags=re.IGNORECASE).strip()
+                        if quiz_topic:
+                            topics.append(quiz_topic)
+
+                        if ratio_val is not None and quiz_topic:
+                            if ratio_val <= 0.67:
+                                quiz_low_topics.append(quiz_topic)
+                                errors.append("low_quiz_score")
+                            elif ratio_val >= 0.9:
+                                errors.append("quiz_mastery")
+                    elif "weak area" in quiz_text:
+                        quiz_topic = str(text_topic or current_topic or "").strip()
+                        quiz_topic = re.sub(r"^(on|regarding)\s+", "", quiz_topic, flags=re.IGNORECASE).strip()
+                        if quiz_topic:
+                            quiz_low_topics.append(quiz_topic)
+                            topics.append(quiz_topic)
+                            errors.append("low_quiz_score")
+
+            if quiz_low_topics:
+                topics = quiz_low_topics + topics
+
+            unique_quiz_low_topics = list(dict.fromkeys(quiz_low_topics))
             
             # Map studied topics to next likely challenges
             next_challenge = self._predict_next_challenge(topics, errors)
             
             return {
-                "prediction": next_challenge["prediction"],
+                "prediction": reflect_insight or next_challenge["prediction"],
                 "confidence": next_challenge["confidence"],
-                "evidence": next_challenge["evidence"],
+                "evidence": next_challenge["evidence"] + ([f"Quiz weakness detected in: {', '.join(unique_quiz_low_topics[:2])}"] if unique_quiz_low_topics else []),
                 "recent_topics": topics[:5],  # Topics user studied
+                "reflect_insight": reflect_insight,
                 "demo_mode": False
             }
             
@@ -423,7 +953,7 @@ class HindsightService:
             "unresolved_count": 1,
             "history": [{"content": f"Misconception: {concept}", "context": {"resolved": True}}],
             "next_question": f"Let's explore {concept} deeper. What's the simplest case you can think of?",
-            "demo_mode": True
+            "demo_mode": False
         }
     
     def _get_demo_memories(self, limit: int) -> List[Dict]:

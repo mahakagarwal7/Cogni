@@ -17,8 +17,49 @@ class ContagionEngine:
     def __init__(self, hindsight: HindsightService = hindsight_service):
         self.hindsight = hindsight
         self.llm = llm_service
+
+    def _format_insights(self, insights: List[Dict[str, Any]]) -> str:
+        """Convert user insights into compact prompt context."""
+        if not insights:
+            return "No prior insight history available."
+
+        lines: List[str] = []
+        for row in insights[:5]:
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            topic = data.get("topic", "general")
+            issue = data.get("issue", "unclear_concept")
+            style = data.get("preferred_style", "guided")
+            lines.append(f"- topic={topic}; issue={issue}; preferred_style={style}")
+
+        return "\n".join(lines)
     
-    async def get_community_insights(self, error_pattern: str) -> Dict[str, Any]:
+    async def _retain_interaction(self, content: str, user_id: str, topic: str, engine_feature: str, interaction_data: Dict[str, Any]) -> None:
+        """
+        CRITICAL HELPER: Retain interaction to hindsight memory.
+        Called after EVERY engine interaction to build persistent memory.
+        No errors here should block the main response flow (wrapped in try/except).
+        """
+        try:
+            metadata = {
+                "user_id": user_id,
+                "topic": topic,
+                "engine_feature": engine_feature,
+                "interaction_type": "tutoring_session",
+                "timestamp": str(__import__("datetime").datetime.now().isoformat()),
+                **{f"data_{k}": str(v) for k, v in interaction_data.items()}
+            }
+            
+            # Asynchronously retain without blocking
+            await self.hindsight.retain_study_session(
+                content=content,
+                context=metadata
+            )
+            print(f"✓ [RETAINED] {engine_feature} interaction for user={user_id}, topic={topic}")
+        except Exception as e:
+            # Never block the main flow - just log warnings
+            print(f"⚠ [WARNING] Failed to retain interaction: {str(e)}")
+    
+    async def get_community_insights(self, error_pattern: str, user_id: str = "anonymous") -> Dict[str, Any]:
         """
         Get insights personalized to THIS student's learning history.
         Uses Hindsight to query actual peer data for the specific topic/input.
@@ -30,9 +71,14 @@ class ContagionEngine:
         3. Generate topic-specific strategies using LLM
         4. Generate mentor-guided learning plan
         5. Return personalized recommendations (backward compatible)
+        
+        CRITICAL: Automatically retains this interaction to hindsight for future recalls.
         """
         # UPGRADE: Treat error_pattern as topic internally
         topic = error_pattern
+
+        insights = await self.hindsight.get_user_insights(user_id)
+        memory_context = self._format_insights(insights)
         
         # Step 1: Query Hindsight for peer insights on THIS TOPIC
         hindsight_data = await self.hindsight.recall_global_contagion(topic)
@@ -48,14 +94,16 @@ class ContagionEngine:
         strategies = await self._generate_topic_strategies(
             topic=topic,
             personal_context=personal_context,
-            hindsight_data=hindsight_data
+            hindsight_data=hindsight_data,
+            memory_context=memory_context
         )
         
         # Step 4: Refine using LLM for personalization
         refined_result = await self._refine_for_student(
             error_pattern=topic,
             strategies=strategies,
-            personal_context=personal_context
+            personal_context=personal_context,
+            memory_context=memory_context
         )
         
         # UPGRADE: Generate learning plan (NEW)
@@ -63,11 +111,15 @@ class ContagionEngine:
         learning_plan = await self._generate_learning_plan(
             topic=topic,
             peer_strategies=peer_strategies,
-            personal_context=personal_context
+            personal_context=personal_context,
+            memory_context=memory_context
         )
         
         # Step 5: Build response (EXACT same format - backward compatible + NEW learning_plan)
-        return {
+        from uuid import uuid4
+        response_id = str(uuid4())
+        result = {
+            "response_id": response_id,
             "feature": "metacognitive_contagion",
             "error_pattern": error_pattern,
             "community_size": hindsight_data.get("community_size", 0),
@@ -78,6 +130,21 @@ class ContagionEngine:
             "learning_plan": learning_plan,  # UPGRADE: NEW FIELD (safe to add)
             "demo_mode": hindsight_data.get("demo_mode", True)
         }
+        
+        # ⚡ CRITICAL: Retain this interaction to hindsight for future recalls
+        await self._retain_interaction(
+            content=f"Contagion query for {topic}: received {result['community_size']} peer insights",
+            user_id=user_id,
+            topic=topic,
+            engine_feature="contagion",
+            interaction_data={
+                "community_size": result["community_size"],
+                "success_rate": result["success_rate"],
+                "strategy": str(result.get("top_strategy", ""))[:100]
+            }
+        )
+        
+        return result
     
     async def _extract_personal_patterns(
         self,
@@ -126,7 +193,8 @@ class ContagionEngine:
         self,
         topic: str,
         personal_context: Dict[str, Any],
-        hindsight_data: Dict[str, Any]
+        hindsight_data: Dict[str, Any],
+        memory_context: str = ""
     ) -> List[Dict[str, Any]]:
         """
         Generate strategies dynamically for ANY topic using LLM + Hindsight.
@@ -147,7 +215,16 @@ class ContagionEngine:
         if self.llm.available:
             learning_style = personal_context.get("learning_style", "adaptive")
             
-            prompt = f"""Generate 4 SPECIFIC, ACTIONABLE strategies for learning/mastering "{topic}".
+            prompt = f"""User history:
+{memory_context}
+
+Current question:
+Generate actionable strategies for mastering {topic}.
+
+Instruction:
+Adapt explanation based on user's past struggles.
+
+Generate 4 SPECIFIC, ACTIONABLE strategies for learning/mastering "{topic}".
 
 Tailor to "{learning_style}" learning style.
 Focus on: practical exercises, visualization, peer learning approaches.
@@ -204,27 +281,27 @@ Success: [0.75-0.95]"""
                     "source": "from_community"
                 })
         
-        # Priority 4: Generic fallback strategies
+        # Priority 4: Baseline strategies (used when no personalized/peer strategy was generated)
         fallback = [
             {
                 "strategy": f"Start with fundamental concepts in {topic}",
                 "success_rate": 0.80,
-                "source": "fallback"
+                "source": "baseline"
             },
             {
                 "strategy": f"Practice problems related to {topic} progressively",
                 "success_rate": 0.82,
-                "source": "fallback"
+                "source": "baseline"
             },
             {
                 "strategy": f"Study peer solutions and approaches to {topic}",
                 "success_rate": 0.78,
-                "source": "fallback"
+                "source": "baseline"
             },
             {
                 "strategy": f"Build a project or apply {topic} in real scenarios",
                 "success_rate": 0.85,
-                "source": "fallback"
+                "source": "baseline"
             }
         ]
         strategies.extend(fallback)
@@ -244,7 +321,8 @@ Success: [0.75-0.95]"""
         self,
         topic: str,
         peer_strategies: str,
-        personal_context: Dict[str, Any]
+        personal_context: Dict[str, Any],
+        memory_context: str = ""
     ) -> str:
         """
         UPGRADE: Generate a mentor-guided learning plan for the topic using LLM.
@@ -261,7 +339,16 @@ Success: [0.75-0.95]"""
         learning_style = personal_context.get("learning_style", "adaptive")
         peer_benefit = f" What helped others: {peer_strategies}." if peer_strategies else ""
         
-        prompt = f"""You are a mentor creating a personalized learning roadmap.
+        prompt = f"""User history:
+    {memory_context}
+
+    Current question:
+    Create a learning roadmap for {topic}.
+
+    Instruction:
+    Adapt explanation based on user's past struggles.
+
+    You are a mentor creating a personalized learning roadmap.
 
 Topic: {topic}
 Student's learning style: {learning_style}
@@ -498,7 +585,8 @@ Success: [0.70-0.95]"""
         self,
         error_pattern: str,
         strategies: List[Dict[str, Any]],
-        personal_context: Dict[str, Any]
+        personal_context: Dict[str, Any],
+        memory_context: str = ""
     ) -> Dict[str, Any]:
         """
         Use LLM to personalize strategy recommendations based on student's history.
@@ -523,7 +611,16 @@ Success: [0.70-0.95]"""
             }
         
         # Use LLM to personalize based on student's history
-        prompt = f"""Based on this student's learning history, rank these strategies for: "{error_pattern}"
+        prompt = f"""User history:
+    {memory_context}
+
+    Current question:
+    Rank the best strategy for {error_pattern}.
+
+    Instruction:
+    Adapt explanation based on user's past struggles.
+
+    Based on this student's learning history, rank these strategies for: "{error_pattern}"
 
 Their learning style: {learning_style}
 Strategies that worked for them before:

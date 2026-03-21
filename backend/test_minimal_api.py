@@ -9,7 +9,7 @@ load_dotenv()
 async def test():
     api_key = os.getenv("HINDSIGHT_API_KEY", "").strip()
     base_url = os.getenv("HINDSIGHT_BASE_URL", "").strip().rstrip('/')
-    bank_id = os.getenv("HINDSIGHT_BANK_ID", "student_demo_001")
+    bank_id = os.getenv("HINDSIGHT_USER_BANK_PREFIX") or os.getenv("HINDSIGHT_BANK_ID", "student_demo_001")
     
     print(f"🔍 Testing minimal API call...")
     print(f"   base_url: {repr(base_url)}")

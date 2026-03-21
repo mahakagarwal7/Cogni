@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 api_key = os.getenv('HINDSIGHT_API_KEY')
 base_url = os.getenv('HINDSIGHT_BASE_URL', 'https://api.hindsight.vectorize.io')
-bank_id = os.getenv('HINDSIGHT_BANK_ID', 'student_demo_001')
+bank_id = os.getenv('HINDSIGHT_USER_BANK_PREFIX') or os.getenv('HINDSIGHT_BANK_ID', 'student_demo_001')
 
 print(f'API Key: {api_key[:20]}...')
 print(f'Base URL: {base_url}')

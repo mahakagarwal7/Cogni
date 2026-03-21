@@ -34,7 +34,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
-import { Slider } from "@/components/ui/slider";
 
 type FeatureMode =
   | "archaeology"
@@ -57,6 +56,12 @@ type GenericRecord = Record<string, unknown>;
 type APIShape = {
   data?: unknown;
   demo_mode?: boolean;
+};
+
+type QuizQuestion = {
+  id: number;
+  question: string;
+  expected_answer: string;
 };
 
 const FEATURES: {
@@ -139,7 +144,7 @@ const QUICK_PROMPTS: Record<FeatureMode, string[]> = {
 };
 export default function ChatPage() {
   // Intro screen state
-  const [isStarted, setIsStarted] = useState(false);
+  const [isStarted, setIsStarted] = useState(true);
   const [activeFeature, setActiveFeature] =
     useState<FeatureMode>("archaeology");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -156,8 +161,21 @@ export default function ChatPage() {
   }>({});
   // UPGRADE: Add summary state
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [killerPromptLoading, setKillerPromptLoading] = useState(false);
   const [previewSummary, setPreviewSummary] = useState<string | null>(null);
   const [fullSummary, setFullSummary] = useState<string | null>(null);
+  const [feedbackByMessageId, setFeedbackByMessageId] = useState<Record<string, number>>({});
+  const [feedbackLoadingByMessageId, setFeedbackLoadingByMessageId] = useState<Record<string, boolean>>({});
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizSubmitting, setQuizSubmitting] = useState(false);
+  const [quizTopic, setQuizTopic] = useState("recursion");
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
+  const [quizAnswers, setQuizAnswers] = useState<string[]>([]);
+  const [quizStartedAt, setQuizStartedAt] = useState<number | null>(null);
+  // UPGRADE: User session persisted to localStorage
+  const [userId, setUserIdState] = useState("student");
+  const [showUserIdInput, setShowUserIdInput] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -174,6 +192,39 @@ export default function ChatPage() {
       },
     ]);
   }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("start") === "1") {
+      setIsStarted(true);
+      localStorage.setItem("cogni_started", "1");
+    }
+
+    const started = localStorage.getItem("cogni_started");
+    if (started === "1") {
+      setIsStarted(true);
+    }
+
+    const stored = localStorage.getItem("cogni_user_id");
+    if (stored && stored !== "student") {
+      setUserIdState(stored);
+    } else {
+      const generated = `student_${Math.random().toString(36).slice(2, 8)}`;
+      setUserIdState(generated);
+      localStorage.setItem("cogni_user_id", generated);
+    }
+  }, []);
+
+  const enterApp = () => {
+    setIsStarted(true);
+    localStorage.setItem("cogni_started", "1");
+  };
+
+  const setUserId = (newId: string) => {
+    const clean = newId.trim() || `student_${Math.random().toString(36).slice(2, 8)}`;
+    setUserIdState(clean);
+    localStorage.setItem("cogni_user_id", clean);
+  };
 
   useEffect(() => {
     const checkBackend = async () => {
@@ -197,6 +248,15 @@ export default function ChatPage() {
     if (activeFeature === "contagion") {
       if (!context.topic?.trim()) return;
     } else if (requiresInput && !input.trim()) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: "Type your question first, then press Send.",
+          timestamp: new Date(),
+        },
+      ]);
       return;
     }
     
@@ -206,6 +266,8 @@ export default function ChatPage() {
     }
     
     if (loading) return;
+
+    const requestQuery = input.trim() || context.topic || "general";
 
     if (requiresInput) {
       const userMessage: Message = {
@@ -222,30 +284,68 @@ export default function ChatPage() {
 
     try {
       let response;
+      let strategySuggestion: Record<string, unknown> | null = null;
+
+      // Best-effort orchestrator strategy hint. If it fails, existing flow remains unchanged.
+      try {
+        const suggestionResponse = await api.suggestResponseStrategy({
+          user_id: userId,
+          query: requestQuery,
+          topic: context.topic,
+          limit: 15,
+        });
+
+        const suggestionData = suggestionResponse.data as Record<string, unknown> | undefined;
+        const suggestion = suggestionData?.suggestion;
+        if (suggestion && typeof suggestion === "object") {
+          strategySuggestion = suggestion as Record<string, unknown>;
+        }
+      } catch {
+        // Intentionally ignore to keep chat pipeline stable.
+      }
 
       switch (activeFeature) {
         case "archaeology": {
           const topic = context.topic || extractTopic(input);
           const confusion = context.confusion || 3;
-          response = await api.getArchaeology(topic, confusion);
+          response = await api.getArchaeology(topic, confusion, userId);
           break;
         }
 
         case "socratic": {
           const concept = context.topic || extractTopic(input);
-          response = await api.askSocratic(concept, input);
+          const confusion = context.confusion || 3;
+          
+          // Check if the previous message was a Socratic question (ending with ?)
+          // If so, treat the current input as a response and reflect instead of asking
+          const prevMessage = messages[messages.length - 1];
+          const shouldReflect = prevMessage?.role === "assistant" && prevMessage?.content?.endsWith("?");
+          
+          if (shouldReflect && prevMessage?.content) {
+            // User is responding to a previous Socratic question - reflect on the response
+            response = await api.reflectSocratic(
+              concept,
+              input,
+              prevMessage.content,
+              userId,
+              confusion
+            );
+          } else {
+            // First question or starting a new line of thinking
+            response = await api.askSocratic(concept, input, userId, confusion);
+          }
           break;
         }
 
         case "shadow": {
           const shadowTopic = context.topic || extractTopic(input);
-          response = await api.getShadowPrediction(shadowTopic, 7);
+          response = await api.getShadowPrediction(shadowTopic, 7, userId);
           break;
         }
 
         case "resonance": {
           const resonanceTopic = context.topic!.trim(); // Guaranteed to exist from handleSend check
-          response = await api.getResonance(resonanceTopic);
+          response = await api.getResonance(resonanceTopic, userId);
           break;
         }
 
@@ -266,7 +366,7 @@ export default function ChatPage() {
             setLoading(false);
             return;
           }
-          response = await api.getContagion(contagionTopic);
+          response = await api.getContagion(contagionTopic, userId);
           break;
         }
 
@@ -301,6 +401,19 @@ export default function ChatPage() {
       }
 
       const assistantMessage = formatResponse(response, activeFeature);
+      const mergedMetadata: Record<string, unknown> = {
+        ...(assistantMessage.metadata || {}),
+      };
+
+      if (strategySuggestion) {
+        if (strategySuggestion.recommended_style) {
+          mergedMetadata.recommended_style = strategySuggestion.recommended_style;
+        }
+        if (strategySuggestion.target_topic) {
+          mergedMetadata.target_topic = strategySuggestion.target_topic;
+        }
+      }
+      mergedMetadata.user_query = requestQuery;
 
       setMessages((prev) => [
         ...prev,
@@ -310,7 +423,7 @@ export default function ChatPage() {
           content: assistantMessage.content,
           feature: activeFeature,
           timestamp: new Date(),
-          metadata: assistantMessage.metadata,
+          metadata: mergedMetadata,
         },
       ]);
     } catch (error) {
@@ -327,6 +440,81 @@ export default function ChatPage() {
       console.error("API Error:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const submitMessageFeedback = async (message: Message, rating: number) => {
+    if (message.role !== "assistant") {
+      return;
+    }
+
+    setFeedbackLoadingByMessageId((prev) => ({ ...prev, [message.id]: true }));
+
+    try {
+      const index = messages.findIndex((m) => m.id === message.id);
+      const previousUserMessage = [...messages.slice(0, index)]
+        .reverse()
+        .find((m) => m.role === "user");
+
+      const messageMetadata = (message.metadata || {}) as GenericRecord;
+      const userQueryFromMetadata =
+        typeof messageMetadata.user_query === "string"
+          ? messageMetadata.user_query
+          : undefined;
+      const userQuery =
+        previousUserMessage?.content || userQueryFromMetadata || context.topic || "general";
+
+      const topicFromMetadata =
+        typeof messageMetadata.target_topic === "string"
+          ? messageMetadata.target_topic
+          : undefined;
+      const topic = topicFromMetadata || context.topic || extractTopic(userQuery);
+
+      const responseId =
+        typeof messageMetadata.response_id === "string"
+          ? messageMetadata.response_id
+          : undefined;
+
+      const rawConfidence = messageMetadata.confidence;
+      const confidence =
+        typeof rawConfidence === "number"
+          ? rawConfidence
+          : typeof rawConfidence === "string"
+            ? Number(rawConfidence)
+            : undefined;
+
+      await api.logFeedback({
+        user_id: userId,
+        user_query: userQuery,
+        llm_response: message.content,
+        engine_used: message.feature || "orchestrator",
+        feedback_text:
+          rating >= 4
+            ? "Helpful response"
+            : rating === 3
+              ? "Partially helpful response"
+              : "Not helpful response",
+        rating,
+        interaction_id: responseId,
+        understood: rating >= 3,
+        confidence:
+          confidence !== undefined && Number.isFinite(confidence) ? confidence : undefined,
+        topic,
+      });
+
+      setFeedbackByMessageId((prev) => ({ ...prev, [message.id]: rating }));
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 5).toString(),
+          role: "assistant",
+          content: "Could not save feedback right now. Your response is still available.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setFeedbackLoadingByMessageId((prev) => ({ ...prev, [message.id]: false }));
     }
   };
 
@@ -350,6 +538,9 @@ export default function ChatPage() {
       },
     ]);
     setContext({});
+    setQuizQuestions([]);
+    setQuizAnswers([]);
+    setQuizStartedAt(null);
   };
 
   const handleQuickPrompt = (prompt: string) => {
@@ -444,6 +635,229 @@ export default function ChatPage() {
       ]);
     } finally {
       setSummaryLoading(false);
+    }
+  };
+
+  const showUserProgress = async () => {
+    setProgressLoading(true);
+
+    try {
+      const currentTopic = context.topic || undefined;
+      const response = await api.getUserProgress(userId, currentTopic);
+      const progress = (response.data as Record<string, unknown> | undefined) || {};
+
+      const studiedTopics = Array.isArray(progress.studied_topics)
+        ? (progress.studied_topics as string[])
+        : [];
+      const recentTopics = Array.isArray(progress.recent_topics)
+        ? (progress.recent_topics as string[])
+        : [];
+      const highConfidenceTopics = Array.isArray(progress.high_confidence_topics)
+        ? (progress.high_confidence_topics as string[])
+        : [];
+      const pastMistakes = Array.isArray(progress.past_mistakes)
+        ? (progress.past_mistakes as string[])
+        : [];
+      const improvementScore = Number(progress.improvement_score ?? 0);
+        const studySessionsCount = Number(progress.study_sessions_count ?? 0);
+      const topicLabel = currentTopic ? currentTopic.replace(/_/g, " ") : "Overall";
+
+      const studiedTopicsText = studiedTopics.length
+        ? studiedTopics.map((topic) => `• ${topic.replace(/_/g, " ")}`).join("\n")
+        : "• No topics studied yet";
+      
+      const recentTopicsText = recentTopics.length
+        ? recentTopics.map((topic) => `• ${topic.replace(/_/g, " ")}`).join("\n")
+        : "• Get started by exploring a topic";
+      
+      const masteredTopicsText = highConfidenceTopics.length
+        ? highConfidenceTopics.map((topic) => `✓ ${topic.replace(/_/g, " ")}`).join("\n")
+        : "• Keep studying to master topics";
+
+      const pastMistakesText = pastMistakes.length
+        ? pastMistakes.map((item) => `• ${item.replace(/_/g, " ")}`).join("\n")
+        : "• No repeated mistakes detected";
+
+  const wowMessage = `📊 **Your Learning Journey**\n\n**What You've Studied** (${studySessionsCount} sessions)\n${studiedTopicsText}\n\n**Recently Explored**\n${recentTopicsText}\n\n**Topics You're Mastering** ⭐\n${masteredTopicsText}\n\n**Progress Trend**\n${improvementScore > 0 ? "📈 Improving: +" : improvementScore < 0 ? "📉 Declining: " : "→ Steady: "}${Math.abs(improvementScore).toFixed(1)}%\n\n**Focus Areas**\n${pastMistakesText}`;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 3).toString(),
+          role: "assistant",
+          content: wowMessage,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 3).toString(),
+          role: "assistant",
+          content: `❌ Could not load progress right now: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setProgressLoading(false);
+    }
+  };
+
+  // PHASE 9: Show killer prompt preview
+  const showKillerPromptPreview = async () => {
+    setKillerPromptLoading(true);
+
+    try {
+      const query = input.trim() || context.topic || "recursion";
+      const topic = context.topic;
+
+      const response = await api.getKillerPromptPreview(userId, query, topic);
+      const data = (response.data as Record<string, unknown> | undefined) || {};
+
+      const memoryContext = String(data.memory_context || "No memory context");
+      const killerPrompt = String(data.killer_prompt || "No prompt generated");
+      const rules = data.adaptive_rules as Record<string, unknown> | undefined;
+
+      const rulesList = rules
+        ? `• Simplify: ${rules.simplify}\n• Provide Examples: ${rules.provide_examples}\n• Change Style: ${rules.change_style}\n• Preferred Style: ${rules.preferred_style}`
+        : "No rules extracted";
+
+      const previewMessage = `🧠 **PHASE 9: Killer Prompt Preview**\n\n**Memory Context:**\n${memoryContext}\n\n**Adaptive Rules:**\n${rulesList}\n\n**Full Prompt (First 500 chars):**\n${killerPrompt.substring(0, 500)}...`;
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 4).toString(),
+          role: "assistant",
+          content: previewMessage,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 4).toString(),
+          role: "assistant",
+          content: `❌ Could not preview killer prompt: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setKillerPromptLoading(false);
+    }
+  };
+
+  const generateQuiz = async () => {
+    setQuizLoading(true);
+    try {
+      const topic = (quizTopic || context.topic || "recursion").trim();
+      const response = await api.generateQuiz(topic, userId);
+      const payload = (response.data as Record<string, unknown> | undefined) || {};
+      const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
+
+      const parsedQuestions: QuizQuestion[] = rawQuestions
+        .map((row, idx) => {
+          const record = row as Record<string, unknown>;
+          return {
+            id: Number(record.id ?? idx + 1),
+            question: String(record.question ?? ""),
+            expected_answer: String(record.expected_answer ?? ""),
+          };
+        })
+        .filter((q) => q.question && q.expected_answer)
+        .slice(0, 3);
+
+      if (!parsedQuestions.length) {
+        throw new Error("No quiz questions were generated");
+      }
+
+      setQuizQuestions(parsedQuestions);
+      setQuizAnswers(new Array(parsedQuestions.length).fill(""));
+      setQuizStartedAt(Date.now());
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 6).toString(),
+          role: "assistant",
+          content: `🧪 Quiz ready on **${topic}**. Answer the 3 questions below, then click Submit Quiz.`,
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 6).toString(),
+          role: "assistant",
+          content: `❌ Could not generate quiz: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setQuizLoading(false);
+    }
+  };
+
+  const submitQuiz = async () => {
+    if (!quizQuestions.length) {
+      return;
+    }
+
+    setQuizSubmitting(true);
+    try {
+      const topic = (quizTopic || context.topic || "recursion").trim();
+      const elapsedSeconds = quizStartedAt ? Math.max(1, Math.round((Date.now() - quizStartedAt) / 1000)) : 0;
+
+      const response = await api.submitQuiz({
+        user_id: userId,
+        topic,
+        questions: quizQuestions.map((q) => q.question),
+        correct_answers: quizQuestions.map((q) => q.expected_answer),
+        student_answers: quizAnswers,
+        time_taken_seconds: elapsedSeconds,
+      });
+
+      const payload = (response.data as Record<string, unknown> | undefined) || {};
+      const score = Number(payload.score ?? 0);
+      const total = Number(payload.total_questions ?? quizQuestions.length);
+      const mistakes = Array.isArray(payload.mistakes) ? (payload.mistakes as string[]) : [];
+
+      const mistakesText = mistakes.length
+        ? mistakes.map((m) => `• ${m}`).join("\n")
+        : "• Great job, no mistakes detected";
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 7).toString(),
+          role: "assistant",
+          content:
+            `✅ **Quiz Submitted**\n\n` +
+            `**Topic:** ${topic}\n` +
+            `**Score:** ${score}/${total}\n\n` +
+            `**Revision Focus**\n${mistakesText}`,
+          timestamp: new Date(),
+        },
+      ]);
+
+      setQuizQuestions([]);
+      setQuizAnswers([]);
+      setQuizStartedAt(null);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 7).toString(),
+          role: "assistant",
+          content: `❌ Quiz submission failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setQuizSubmitting(false);
     }
   };
 
@@ -557,15 +971,15 @@ export default function ChatPage() {
     return (
       <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 text-white relative overflow-hidden">
         {/* Elegant background gradients */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/20 via-zinc-950 to-zinc-950"></div>
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.15)_0,rgba(0,0,0,0)_50%)]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/20 via-zinc-950 to-zinc-950"></div>
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.15)_0,rgba(0,0,0,0)_50%)]" />
         
         {/* Subtle grid pattern for depth */}
-        <div className="absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-50"></div>
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-50"></div>
 
         {/* Floating decorative elements */}
-        <div className="absolute top-1/4 left-1/4 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-purple-600/20 blur-[120px]" />
-        <div className="absolute bottom-1/4 right-1/4 h-64 w-64 translate-x-1/2 translate-y-1/2 rounded-full bg-indigo-600/20 blur-[120px]" />
+        <div className="pointer-events-none absolute top-1/4 left-1/4 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-purple-600/20 blur-[120px]" />
+        <div className="pointer-events-none absolute bottom-1/4 right-1/4 h-64 w-64 translate-x-1/2 translate-y-1/2 rounded-full bg-indigo-600/20 blur-[120px]" />
 
         <div className="z-10 flex flex-col items-center max-w-4xl text-center px-6 animate-in fade-in zoom-in duration-1000 slide-in-from-bottom-8">
           <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-1.5 text-sm font-medium text-purple-300 shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-md">
@@ -586,7 +1000,14 @@ export default function ChatPage() {
             Your intelligent study companion. It remembers your struggles, adapts to your patterns, and helps you master complex topics.
           </p>
           <Button
-            onClick={() => setIsStarted(true)}
+            onClick={enterApp}
+            onMouseDown={enterApp}
+            onTouchStart={enterApp}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                enterApp();
+              }
+            }}
             className="group relative h-16 overflow-hidden rounded-full bg-purple-600 px-14 text-xl font-medium text-white shadow-[0_0_40px_rgba(168,85,247,0.4)] transition-all duration-300 hover:scale-105 hover:shadow-[0_0_60px_rgba(168,85,247,0.6)] active:scale-95"
           >
             <span className="relative z-10 flex items-center gap-2">
@@ -665,7 +1086,7 @@ export default function ChatPage() {
       </aside>
       <div className="flex flex-1 flex-col">
         <header className="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-900/85 p-6 backdrop-blur-xl shadow-sm">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-3xl font-semibold text-zinc-100 tracking-tight">
                 {FEATURES.find((f) => f.id === activeFeature)?.label}
@@ -674,11 +1095,35 @@ export default function ChatPage() {
                 {FEATURES.find((f) => f.id === activeFeature)?.description}
               </p>
             </div>
-            <Button variant="ghost" size="icon" onClick={clearChat} className="hover:bg-red-500/10 hover:text-red-400 transition-colors">
-              <TrashIcon className="h-5 w-5 scale-110" />
-            </Button>
+            <div className="flex items-center gap-4">
+              <div className="flex flex-col items-end gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowUserIdInput(!showUserIdInput)}
+                  className="text-xs text-zinc-400 border-zinc-600 hover:bg-zinc-800/50 h-8 px-3"
+                >
+                  👤 {userId}
+                </Button>
+                {showUserIdInput && (
+                  <input
+                    type="text"
+                    value={userId}
+                    onChange={(e) => setUserId(e.target.value)}
+                    placeholder="Enter user ID..."
+                    className="h-8 px-3 text-sm rounded border border-zinc-600 bg-zinc-950 text-zinc-100 placeholder:text-zinc-500 focus:border-purple-500 focus:outline-none"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') setShowUserIdInput(false);
+                    }}
+                  />
+                )}
+              </div>
+              <Button variant="ghost" size="icon" onClick={clearChat} className="hover:bg-red-500/10 hover:text-red-400 transition-colors">
+                <TrashIcon className="h-5 w-5 scale-110" />
+              </Button>
+            </div>
           </div>
-          <Separator className="my-5 border-zinc-800" />
+          <Separator className="my-4 border-zinc-800" />
           <div className="flex gap-6 items-end">
             {(activeFeature === "archaeology" ||
               activeFeature === "socratic" ||
@@ -717,15 +1162,15 @@ export default function ChatPage() {
                 <Label htmlFor="confusion" className="text-[15px] font-medium text-zinc-300 mb-4 block">
                   Confusion Level: {context.confusion || 3}
                 </Label>
-                <Slider
+                <input
                   id="confusion"
+                  type="range"
                   min={1}
                   max={5}
-                  value={[context.confusion || 3]}
-                  onValueChange={(value) =>
-                    handleContextUpdate("confusion", value[0])
-                  }
-                  className="mt-2"
+                  step={1}
+                  value={context.confusion || 3}
+                  onChange={(e) => handleContextUpdate("confusion", Number(e.target.value))}
+                  className="mt-2 w-full accent-purple-500"
                 />
               </div>
             )}
@@ -748,7 +1193,13 @@ export default function ChatPage() {
         <main className="flex-1 scroll-smooth overflow-y-auto p-6 md:p-10">
           <div className="space-y-4">
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                onFeedback={submitMessageFeedback}
+                feedbackRating={feedbackByMessageId[msg.id]}
+                feedbackLoading={!!feedbackLoadingByMessageId[msg.id]}
+              />
             ))}
             {loading && <LoadingBubble />}
             <div ref={messagesEndRef} />
@@ -765,18 +1216,16 @@ export default function ChatPage() {
                     onClick={() => handleQuickPrompt(prompt)}
                     className="group cursor-pointer border-zinc-700/50 bg-zinc-900/60 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:border-purple-500/60 hover:bg-purple-500/10 hover:shadow-[0_8px_30px_-4px_rgba(168,85,247,0.25)] active:translate-y-0 active:scale-95"
                   >
-                    <CardContent className="p-5 text-center">
-                      <p className="text-base leading-relaxed transition-colors group-hover:text-purple-200 text-zinc-300">{prompt}</p>
+                    <CardContent className="p-4">
+                      <p className="text-[15px] leading-relaxed text-zinc-300">{prompt}</p>
                     </CardContent>
                   </Card>
                 ))}
               </div>
             </div>
           )}
-        </main>
-        <footer className="border-t border-zinc-800 bg-zinc-950/80 p-6 backdrop-blur-xl">
-          {activeFeature === "shadow" ? (
-            <div className="mx-auto flex max-w-4xl justify-center">
+          {activeFeature === "contagion" ? (
+            <div className="mx-auto flex max-w-4xl justify-center gap-4 flex-wrap mt-8">
               <Button
                 onClick={handleSend}
                 disabled={loading}
@@ -796,7 +1245,7 @@ export default function ChatPage() {
             <div className="mx-auto flex max-w-4xl justify-center">
               <Button
                 onClick={handleSend}
-                disabled={loading || !context.topic}
+                disabled={loading}
                 className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? (
@@ -810,29 +1259,119 @@ export default function ChatPage() {
               </Button>
             </div>
           ) : activeFeature === "memory" ? (
-            <div className="mx-auto flex max-w-4xl justify-center gap-4">
-              <Button
-                onClick={generateSummary}
-                disabled={summaryLoading || messages.length <= 1}
-                className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95"
-              >
-                {summaryLoading ? (
-                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
-                ) : (
-                  <>
-                    <MagicWandIcon className="mr-2 h-5 w-5" />
-                    Generate Summary
-                  </>
-                )}
-              </Button>
-              {fullSummary && (
+            <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+              <div className="flex justify-center gap-3 flex-wrap">
                 <Button
-                  onClick={downloadSummaryPDF}
-                  className="h-14 rounded-full bg-indigo-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-indigo-500 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] active:scale-95"
+                  onClick={showUserProgress}
+                  disabled={progressLoading}
+                  className="h-14 rounded-full bg-emerald-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-emerald-500 hover:shadow-[0_0_20px_rgba(16,185,129,0.4)] active:scale-95"
                 >
-                  📥 Download PDF
+                  {progressLoading ? (
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+                  ) : (
+                    <>
+                      <MagicWandIcon className="mr-2 h-5 w-5" />
+                      Show Progress
+                    </>
+                  )}
                 </Button>
-              )}
+                <Button
+                  onClick={generateSummary}
+                  disabled={summaryLoading || messages.length <= 1}
+                  className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95"
+                >
+                  {summaryLoading ? (
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+                  ) : (
+                    <>
+                      <MagicWandIcon className="mr-2 h-5 w-5" />
+                      Generate Summary
+                    </>
+                  )}
+                </Button>
+                {fullSummary && (
+                  <Button
+                    onClick={downloadSummaryPDF}
+                    className="h-14 rounded-full bg-indigo-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-indigo-500 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] active:scale-95"
+                  >
+                    📥 Download PDF
+                  </Button>
+                )}
+              </div>
+
+              <Card className="border-zinc-700/60 bg-zinc-900/70 backdrop-blur-sm">
+                <CardHeader>
+                  <CardTitle className="text-zinc-100">Quick Quiz</CardTitle>
+                  <CardDescription className="text-zinc-400">
+                    Generate a 3-question revision quiz, submit answers, and store rich learning memory.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-3 flex-wrap items-end">
+                    <div className="flex-1 min-w-[220px]">
+                      <Label htmlFor="quiz-topic" className="text-zinc-300">Quiz Topic</Label>
+                      <Input
+                        id="quiz-topic"
+                        value={quizTopic}
+                        onChange={(e) => setQuizTopic(e.target.value)}
+                        placeholder="e.g., recursion, graph traversal"
+                        className="mt-2 border-zinc-600 bg-zinc-950/60"
+                      />
+                    </div>
+                    <Button
+                      onClick={generateQuiz}
+                      disabled={quizLoading || !quizTopic.trim()}
+                      className="h-11 rounded-lg bg-cyan-600 px-6 text-white hover:bg-cyan-500"
+                    >
+                      {quizLoading ? "Generating..." : "Generate Quiz"}
+                    </Button>
+                  </div>
+
+                  {quizQuestions.length > 0 && (
+                    <div className="space-y-4 pt-2">
+                      {quizQuestions.map((q, idx) => (
+                        <div key={q.id} className="rounded-lg border border-zinc-700/70 bg-zinc-950/40 p-4">
+                          <p className="mb-3 text-sm font-semibold text-zinc-200">
+                            <span className="text-cyan-300">Q{idx + 1}.</span> {q.question}
+                          </p>
+                          <div className="space-y-2">
+                            {[
+                              q.expected_answer,
+                              "I don't know",
+                              "Different answer",
+                              "Need more context"
+                            ].map((option, optIdx) => (
+                              <button
+                                key={optIdx}
+                                onClick={() => {
+                                  const next = [...quizAnswers];
+                                  next[idx] = option;
+                                  setQuizAnswers(next);
+                                }}
+                                className={`w-full p-3 text-left rounded-lg border-2 transition-all ${
+                                  quizAnswers[idx] === option
+                                    ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200 font-semibold'
+                                    : 'border-zinc-600 bg-zinc-900/40 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-900/60'
+                                }`}
+                              >
+                                • {option}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+
+                      <Button
+                        onClick={submitQuiz}
+                        disabled={quizSubmitting || quizAnswers.some((a) => !a)}
+                        className="h-11 rounded-lg bg-emerald-600 px-6 text-white hover:bg-emerald-500"
+                      >
+                        {quizSubmitting ? "Submitting..." : "Submit Quiz"}
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </div>
           ) : (
             <div className="relative mx-auto flex max-w-5xl items-center rounded-full border border-zinc-600/80 bg-zinc-900/70 shadow-lg backdrop-blur-md transition-all focus-within:border-purple-500 focus-within:bg-zinc-900 focus-within:ring-4 focus-within:ring-purple-500/20 focus-within:shadow-[0_0_30px_rgba(168,85,247,0.15)] hover:border-zinc-500">
@@ -848,7 +1387,7 @@ export default function ChatPage() {
                 size="icon"
                 className="absolute right-2 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-purple-600 text-white shadow-md transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-md"
                 onClick={handleSend}
-                disabled={loading || !input.trim()}
+                disabled={loading}
               >
                 {loading ? (
                   <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
@@ -860,16 +1399,27 @@ export default function ChatPage() {
               </Button>
             </div>
           )}
-        </footer>
+        </main>
       </div>
     </div>
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({
+  message,
+  onFeedback,
+  feedbackRating,
+  feedbackLoading,
+}: {
+  message: Message;
+  onFeedback?: (message: Message, rating: number) => Promise<void>;
+  feedbackRating?: number;
+  feedbackLoading?: boolean;
+}) {
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const [copied, setCopied] = useState(false);
+  const hiddenMetadataKeys = new Set(["response_id", "user_query"]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -924,17 +1474,42 @@ function MessageBubble({ message }: { message: Message }) {
           ))}
           {message.metadata && Object.keys(message.metadata).length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2 text-xs">
-              {Object.entries(message.metadata).map(([key, value]) => (
-                <div
-                  key={key}
-                  className="flex items-center gap-1.5 rounded-full bg-zinc-700/50 px-3 py-1"
+              {Object.entries(message.metadata)
+                .filter(([key]) => !hiddenMetadataKeys.has(key))
+                .map(([key, value]) => (
+                  <div
+                    key={key}
+                    className="flex items-center gap-1.5 rounded-full bg-zinc-700/50 px-3 py-1"
+                  >
+                    <span className="font-semibold capitalize">
+                      {key.replace(/_/g, " ")}:
+                    </span>
+                    <span>{String(value)}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+          {!isUser && !isSystem && onFeedback && (
+            <div className="mt-5 flex items-center gap-2">
+              <span className="text-xs text-zinc-400">Rate:</span>
+              {[1, 2, 3, 4, 5].map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  disabled={feedbackLoading}
+                  onClick={() => void onFeedback(message, value)}
+                  className={`rounded-md px-2 py-1 text-xs transition-colors ${
+                    feedbackRating === value
+                      ? "bg-purple-600 text-white"
+                      : "bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600"
+                  } ${feedbackLoading ? "cursor-not-allowed opacity-60" : ""}`}
                 >
-                  <span className="font-semibold capitalize">
-                    {key.replace(/_/g, " ")}:
-                  </span>
-                  <span>{String(value)}</span>
-                </div>
+                  {value}
+                </button>
               ))}
+              {feedbackRating !== undefined && (
+                <span className="text-xs text-zinc-400">Saved</span>
+              )}
             </div>
           )}
         </CardContent>
@@ -997,6 +1572,11 @@ function formatResponse(
     demo_mode: apiResponse.demo_mode,
   };
 
+  const responseId = apiData.response_id ?? data.response_id;
+  if (typeof responseId === "string" && responseId.trim()) {
+    metadata.response_id = responseId;
+  }
+
   const systemConfidence = apiData.confidence ?? data.confidence;
   if (systemConfidence !== undefined && systemConfidence !== null) {
     metadata.confidence = systemConfidence;
@@ -1029,16 +1609,24 @@ function formatResponse(
     }
 
     case "socratic": {
+      // Handle both initial questions (/ask) and follow-up questions (/reflect)
+      const question = String(data.question || data.follow_up_question || "Let's explore this together. What's the simplest case you can think of?");
+      
+      // If this is a reflection response, include the response analysis
+      let content: string = question;
+      if (data.response_analysis) {
+        content = `**Your response**: _${String(data.user_response)}_\n\n**Analysis**: ${String(data.response_analysis)}\n\n**Next question**: ${question}`;
+      }
+      
       return {
-        content: `${
-          data.question ||
-          "Let's explore this together. What's the simplest case you can think of?"
-        }`,
+        content,
         metadata: {
+          ...metadata,
           resolved_count: (data.past_history as GenericRecord | undefined)
             ?.resolved_count,
           unresolved_count: (data.past_history as GenericRecord | undefined)
             ?.unresolved_count,
+          is_follow_up: !!data.follow_up_question,
         },
       };
     }
@@ -1092,7 +1680,7 @@ function formatResponse(
       
       return {
         content: finalContent,
-        metadata: { connection_count: hiddenConnections.length },
+        metadata: { ...metadata, connection_count: hiddenConnections.length },
       };
     }
 
@@ -1186,7 +1774,7 @@ function formatResponse(
           .join("\n")}${
           memories.length > 5 ? `\n...and ${memories.length - 5} more` : ""
         }`,
-        metadata: { memory_count: memories.length },
+        metadata: { ...metadata, memory_count: memories.length },
       };
     }
 
