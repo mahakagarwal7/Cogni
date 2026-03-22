@@ -2170,6 +2170,24 @@ function formatResponse(
       const question = rawQuestion.trim().endsWith("?") ? rawQuestion.trim() : `${rawQuestion.trim()}?`;
       const hint = data.hint ? String(data.hint) : undefined;
       const concept = data.concept ? String(data.concept) : "";
+      const responseAnalysis =
+        typeof data.response_analysis === "object" && data.response_analysis !== null
+          ? (data.response_analysis as GenericRecord)
+          : undefined;
+      const questionType =
+        (typeof data.question_type === "string" && data.question_type.trim()) ||
+        (typeof responseAnalysis?.response_type === "string" &&
+          responseAnalysis.response_type.trim()) ||
+        "";
+      const qualityLabel =
+        (typeof data.question_quality === "string" && data.question_quality.trim()) ||
+        (typeof responseAnalysis?.understanding_score === "number"
+          ? responseAnalysis.understanding_score >= 0.8
+            ? "high"
+            : responseAnalysis.understanding_score >= 0.5
+              ? "medium"
+              : "low"
+          : "");
       
       // Keep Socratic output compact and readable.
       const lines: string[] = [];
@@ -2507,6 +2525,31 @@ function getShadowPredictionsFromMetadata(metadata?: Record<string, unknown>): S
     });
   }
   return cards;
+}
+
+function getMetadataBadgeClasses(key: string, value: unknown): string {
+  if (key === "confidence") {
+    const confidence = Number(value);
+    if (!Number.isNaN(confidence) && confidence >= 0.8) {
+      return "border-emerald-400/35 bg-emerald-500/10 text-emerald-200";
+    }
+    if (!Number.isNaN(confidence) && confidence >= 0.5) {
+      return "border-amber-400/35 bg-amber-500/10 text-amber-200";
+    }
+    return "border-rose-400/35 bg-rose-500/10 text-rose-200";
+  }
+
+  if (key === "demo_mode") {
+    return value
+      ? "border-indigo-400/35 bg-indigo-500/10 text-indigo-200"
+      : "border-zinc-500/30 bg-zinc-500/10 text-zinc-300";
+  }
+
+  if (key === "response_id") {
+    return "border-purple-400/30 bg-purple-500/10 text-purple-200";
+  }
+
+  return "border-white/15 bg-white/5 text-zinc-300";
 }
 
 function getGuidedFlow(

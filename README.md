@@ -1,556 +1,413 @@
-# 🧠 Cogni - Metacognitive Study Companion
+# 🧠 Cogni — Metacognitive Study Companion
 
-**AI Agents That Learn Using Hindsight**
+**AI learning agents powered by Hindsight memory + LLM reasoning**
 
-Cogni is an intelligent study companion that uses advanced AI agents to help you understand concepts better, analyze your learning progress, and optimize your study sessions through metacognitive feedback and personalized insights.
+Cogni is a full-stack learning system that helps students understand concepts deeply, track learning progress over time, and receive adaptive coaching across multiple cognitive modes.
 
 ![Status](https://img.shields.io/badge/status-active-brightgreen)
 ![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
 ![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.135.0-brightgreen)
 ![Next.js](https://img.shields.io/badge/Next.js-16.2.0-black)
+![UI](https://img.shields.io/badge/UI-Tailwind%20v4-06B6D4)
 
 ---
 
-## 📋 Table of Contents
+## 📚 Table of Contents
 
-- [Project Overview](#project-overview)
-- [Features](#features)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Running the Application](#running-the-application)
-- [Features Guide](#features-guide)
-- [File Organization](#file-organization)
+- [Project Overview](#-project-overview)
+- [What’s New](#-whats-new)
+- [Core Features](#-core-features)
+- [Tech Stack](#-tech-stack)
+- [Architecture](#-architecture)
+- [Project Structure](#-project-structure)
+- [Setup](#-setup)
+- [Run the App](#-run-the-app)
+- [API Surface](#-api-surface)
+- [Feature Usage Guide](#-feature-usage-guide)
+- [Troubleshooting](#-troubleshooting)
+- [Contributing](#-contributing)
 
 ---
 
 ## 🎯 Project Overview
 
-Cogni is a full-stack metacognitive study application that combines intelligent AI agents with interactive learning tools. The platform helps students understand concepts deeply by providing temporal analysis of confusion points, Socratic questioning, cognitive pattern analysis, and personalized study recommendations.
+Cogni combines specialized AI engines with persistent learning memory to create a personalized study experience.
 
-**Key Innovation:** Uses Hindsight Memory technology to learn from conversation history and provide context-aware, intelligent responses.
+### Why Cogni
+
+- Tracks how a student learns over time, not just one chat turn.
+- Uses **Hindsight memory** to ground recommendations in prior behavior.
+- Uses **LLM reasoning** to adapt explanations, questions, and roadmaps.
+- Provides both conversational guidance and visual memory analytics.
 
 ---
 
-## ✨ Features
+## ✨ Core Features
 
-### 🏛️ **Temporal Cognitive Archaeology**
+### 1) 🏛️ Temporal Cognitive Archaeology
 
-Analyzes your learning history to identify when confusion patterns first emerged and trace thought evolution through time.
+**Goal:** Find when confusion patterns appeared and what helped previously.
 
-### 🤔 **Socratic Ghost**
+- Endpoint: `GET /study/archaeology`
+- Inputs: topic + confusion level
+- Output: grounded recommendation + adaptive explanation context
 
-Challenges your assumptions and misconceptions through carefully crafted questions designed to deepen understanding.
+---
 
-### 👥 **Cognitive Shadow**
+### 2) 🤔 Socratic Ghost
 
-Mirrors your thinking patterns and provides insights into your learning behavior and cognitive style.
+**Goal:** Challenge misconceptions with targeted, adaptive questioning.
 
-### 🔄 **Resonance Engine**
+- Endpoints: `POST /socratic/ask`, `POST /socratic/reflect`, `POST /socratic/hint`
+- Supports multi-turn questioning with response-aware follow-ups
+- Includes compact metadata for question continuity
 
-Finds connections between concepts you've learned, helping you build a holistic understanding.
+---
 
-### 🧬 **Contagion Analysis**
+### 3) 👥 Cognitive Shadow
 
-Traces how understanding in one domain can propagate and influence learning in related areas.
+**Goal:** Predict likely next struggle areas from topic + patterns.
 
-### 📚 **Memory & Study Planning**
+- Endpoint: `GET /insights/shadow`
+- Returns prediction overview, evidence, and confidence signals
 
-Generates AI-powered summaries of conversations, extracts key insights, and creates downloadable PDF study plans with dynamic topic-based filenames.
+---
+
+### 4) 🔗 Resonance Engine
+
+**Goal:** Discover hidden conceptual links between topics.
+
+- Endpoint: `GET /insights/resonance`
+- Hybrid approach: hardcoded fast paths + LLM-generated connections
+
+---
+
+### 5) 🧬 Metacognitive Contagion (Personalized Roadmap)
+
+**Goal:** Learn from personal + peer patterns with a full guided plan.
+
+- Endpoint: `GET /insights/contagion`
+- Pipeline: personal memory recall → style inference → strategy refinement → roadmap generation
+- Returns:
+  - top strategy
+  - additional strategies
+  - learning plan (full roadmap text)
+  - memory grounding metadata
+
+---
+
+### 6) 🧠 Memory Intelligence
+
+**Goal:** Make learning history visible and actionable.
+
+- Endpoints:
+  - `GET /memory/recall`
+  - `GET /memory/timeline`
+  - `GET /memory/confidence`
+  - `GET /memory/summary`
+  - `GET /memory/what-cogni-knows`
+- Frontend uses timeline + confidence data for student performance visualization.
+
+---
+
+### 7) 📝 Study Summary + PDF
+
+- `POST /memory/summary` for text summaries
+- `POST /memory/summary/pdf` for downloadable study PDFs
+
+---
+
+### 8) ✅ Quiz & Feedback Loop
+
+- Quiz:
+  - `GET /study/quiz`
+  - `POST /study/quiz/submit`
+- Feedback & quality signals:
+  - `POST /feedback/log`
+  - `POST /feedback/suggest`
+  - `GET /feedback/user-progress`
+  - `GET /feedback/insights`
 
 ---
 
 ## 🛠️ Tech Stack
 
-### **Frontend**
+### Frontend
 
 - **Framework:** Next.js 16.2.0
-- **Library:** React 19.2.4
-- **Language:** TypeScript 5
-- **Styling:** Tailwind CSS 4
-- **UI Components:**
-  - Radix UI (icons, labels, separators, sliders)
-  - Custom component library
-- **HTTP Client:** Axios 1.13.6
-- **Utilities:** class-variance-authority, clsx, tailwind-merge
+- **UI:** React 19 + TypeScript 5 + Tailwind CSS 4
+- **Components:** Radix UI + custom UI system
+- **Charts:** Recharts
 
-### **Backend**
+### Backend
 
-- **Framework:** FastAPI 0.135.0
-- **Server:** Uvicorn 0.32.0
-- **Validation:** Pydantic 2.7.0
-- **AI Integration:**
-  - Hindsight Client 0.1.0 (Conversation Memory)
-  - Groq 0.13.0 (LLM API - qwen/qwen3-32b)
-- **PDF Generation:**
-  - ReportLab 4.0.0 (Primary)
-  - FPDF2 2.7.0 (Fallback)
-- **HTTP:** HTTPX 0.27.2
-- **Environment:** python-dotenv 1.0.1
+- **Framework:** FastAPI
+- **Model layer:** Pydantic
+- **AI:** Groq LLM + Hindsight memory client
+- **Docs:** OpenAPI/Swagger (`/docs`)
+- **PDF:** ReportLab + FPDF2 fallback
+
+---
+
+## 🧩 Architecture
+
+Cogni follows a resilient hybrid pattern across engines:
+
+1. Use deterministic/hardcoded logic when reliable
+2. Enrich via hindsight memory retrieval
+3. Personalize with LLM generation
+4. Fall back safely if upstream generation is weak or unavailable
+
+This keeps UX stable while preserving high-quality adaptive behavior.
 
 ---
 
 ## 📁 Project Structure
 
-```
+```text
 Cogni/
-├── backend/                          # FastAPI backend server
+├── backend/
 │   ├── app/
-│   │   ├── main.py                   # FastAPI app initialization & routing
-│   │   ├── engines/                  # AI Agent Engines
-│   │   │   ├── archaeology_engine.py # Temporal analysis engine
-│   │   │   ├── socratic_engine.py    # Socratic questioned engine
-│   │   │   ├── shadow_engine.py      # Cognitive pattern analysis
-│   │   │   ├── resonance_engine.py   # Concept connection engine
-│   │   │   └── contagion_engine.py   # Cross-domain learning engine
-│   │   ├── routes/                   # API Endpoints
-│   │   │   ├── study_routes.py       # Study feature endpoints
-│   │   │   ├── socratic_routes.py    # Socratic agent endpoints
-│   │   │   ├── memory_routes.py      # Memory & summary endpoints
-│   │   │   ├── insights_routes.py    # Insights & analysis endpoints
-│   │   │   └── health_routes.py      # Health check endpoints
-│   │   ├── services/                 # Business Logic
-│   │   │   ├── summary_service.py    # Summary generation & PDF creation
-│   │   │   └── hindsight_service.py  # Hindsight memory integration
-│   │   └── models/                   # Data Models
-│   │       └── memory_types.py       # Type definitions
-│   ├── requirements.txt              # Python dependencies
-│   ├── run.py                        # Development server launcher
-│   ├── test_*.py                     # Test scripts
-│   └── scripts/
-│       ├── seed_demo_data.py         # Demo data seeding
-│       └── endpoint_audit.ps1        # API endpoint audit
-│
-├── frontend/                         # Next.js frontend application
-│   ├── src/
-│   │   ├── app/
-│   │   │   ├── page.tsx              # Main chat interface (All features)
-│   │   │   ├── layout.tsx            # App layout wrapper
-│   │   │   └── globals.css           # Global styles
-│   │   ├── components/               # React components
-│   │   │   └── ui/                   # Reusable UI components
+│   │   ├── main.py
+│   │   ├── engines/
+│   │   │   ├── archaeology_engine.py
+│   │   │   ├── socratic_engine.py
+│   │   │   ├── shadow_engine.py
+│   │   │   ├── resonance_engine.py
+│   │   │   └── contagion_engine.py
+│   │   ├── routes/
+│   │   │   ├── study_routes.py
+│   │   │   ├── socratic_routes.py
+│   │   │   ├── insights_routes.py
+│   │   │   ├── memory_routes.py
+│   │   │   ├── feedback_routes.py
+│   │   │   └── health_routes.py
 │   │   ├── services/
-│   │   │   └── api.ts                # API client & endpoints
-│   │   └── lib/                      # Utility functions
-│   ├── public/                       # Static assets
-│   ├── package.json                  # Node.js dependencies
-│   ├── tsconfig.json                 # TypeScript config
-│   ├── tailwind.config.ts            # Tailwind CSS config
-│   ├── next.config.ts                # Next.js config
-│   └── eslint.config.mjs             # ESLint rules
-│
-└── README.md                         # This file
+│   │   └── models/
+│   ├── requirements.txt
+│   └── run.py
+├── frontend/
+│   ├── src/
+│   │   ├── app/page.tsx
+│   │   ├── services/api.ts
+│   │   └── components/
+│   └── package.json
+└── README.md
 ```
 
 ---
 
-## 📦 Prerequisites
+## ⚙️ Setup
 
-### **Required**
+### Prerequisites
 
-- **Python 3.8 or higher**
-- **Node.js 18 or higher** (with npm or yarn)
-- **Git** (for version control)
+- Python 3.8+
+- Node.js 18+
+- npm (or yarn/pnpm)
+- Groq API key
 
-### **API Keys Required**
-
-- **Groq API Key** - For LLM-powered features (free tier available)
-- Create `.env` file in `backend/` directory with:
-  ```
-  GROQ_API_KEY=your_api_key_here
-  ```
-
-### **Optional**
-
-- **Virtual Environment Tool** - venv, conda, or poetry (recommended for Python)
-- **Package Manager** - npm, yarn, or pnpm for Node.js
-
----
-
-## 🚀 Installation
-
-### **1. Clone Repository**
+### 1) Clone
 
 ```bash
 git clone <repository-url>
 cd Cogni
 ```
 
-### **2. Backend Setup**
-
-#### Using venv (Recommended)
+### 2) Backend
 
 ```bash
 cd backend
+python -m venv .venv
+```
 
-# Create virtual environment
-python -m venv venv
+Activate environment:
 
-# Activate virtual environment
-# On Windows PowerShell:
-.\venv\Scripts\Activate.ps1
-# On macOS/Linux:
-source venv/bin/activate
+- Windows PowerShell: `./.venv/Scripts/Activate.ps1`
+- macOS/Linux: `source .venv/bin/activate`
 
-# Install dependencies
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
-#### Using conda
+Create `backend/.env`:
 
 ```bash
-cd backend
-conda create -n cogni python=3.10
-conda activate cogni
-pip install -r requirements.txt
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
-### **3. Configure Environment**
+### 3) Frontend
 
 ```bash
-cd backend
-
-# Create .env file
-# Add your Groq API key:
-# GROQ_API_KEY=your_key_here
-```
-
-### **4. Frontend Setup**
-
-```bash
-cd frontend
-
-# Install dependencies
+cd ../frontend
 npm install
-# or
-yarn install
-# or
-pnpm install
+npm run dev
 ```
 
 ---
 
-## 🎯 Running the Application
+## ▶️ Run the App
 
-### **Start Backend Server**
+### Backend
 
 ```bash
 cd backend
-
-# Activate virtual environment (if using venv)
-# Windows:
-.\venv\Scripts\Activate.ps1
-# macOS/Linux:
-source venv/bin/activate
-
-# Run development server
 python run.py
 ```
 
-**Backend runs on:** `http://localhost:8000`
+Backend URLs:
 
-**Available documentation:**
+- API root: `http://localhost:8000`
+- Swagger: `http://localhost:8000/docs`
+- ReDoc: `http://localhost:8000/redoc`
+- Health: `http://localhost:8000/health`
 
-- Swagger UI (Interactive API): `http://localhost:8000/docs`
-- ReDoc (API Reference): `http://localhost:8000/redoc`
-- Health Check: `http://localhost:8000/health`
-
-### **Start Frontend Server**
+### Frontend
 
 ```bash
 cd frontend
-
-# Development mode
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
 ```
 
-**Frontend runs on:** `http://localhost:3000`
+Frontend URL: `http://localhost:3000`
 
-### **Build for Production**
+### Production build
 
 ```bash
-# Frontend
 cd frontend
 npm run build
-npm start
-
-# Backend (uses Uvicorn)
-cd backend
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+npm run start
 ```
 
 ---
 
-## 🔌 API Documentation
+## 🔌 API Surface
 
-### **Base URL**
+> All routes are available under both direct paths and `/api/*` aliases.
 
-- Development: `http://localhost:8000`
-- Endpoints available under `/` and `/api/` paths
+### Health
 
-### **Core Endpoints**
+- `GET /health`
 
-#### **Health Check**
+### Study
 
-```
-GET /health
-```
+- `POST /study/log`
+- `GET /study/archaeology`
+- `GET /study/quiz`
+- `POST /study/quiz/submit`
 
-Returns application status and available features.
+### Socratic
 
-#### **Study Features**
+- `POST /socratic/ask`
+- `POST /socratic/reflect`
+- `POST /socratic/hint`
+- `POST /socratic/log`
+- `GET /socratic/history`
+- `GET /socratic/killer-prompt-preview`
 
-```
-POST /study/generate
-POST /study/analyze
-GET /study/history
-```
+### Insights
 
-#### **Socratic Agent**
+- `GET /insights/shadow`
+- `GET /insights/patterns`
+- `GET /insights/resonance`
+- `GET /insights/contagion`
 
-```
-POST /socratic/question
-POST /socratic/dialog
-GET /socratic/history
-```
+### Memory
 
-#### **Memory & Summaries**
+- `GET /memory/recall`
+- `GET /memory/timeline`
+- `GET /memory/confidence`
+- `GET /memory/summary`
+- `GET /memory/what-cogni-knows`
+- `POST /memory/summary`
+- `POST /memory/summary/pdf`
 
-```
-POST /memory/summary           # Generate AI summary from conversation
-POST /memory/summary/pdf       # Download summary as PDF
-GET /memory/summaries          # List previous summaries
-```
+### Feedback
 
-#### **Insights**
-
-```
-POST /insights/analyze
-GET /insights/learning-patterns
-```
-
-### **Interactive API Testing**
-
-Visit `http://localhost:8000/docs` for full Swagger UI with:
-
-- Real-time request/response testing
-- Parameter validation
-- Example requests
-- Response schemas
+- `GET /feedback/insights`
+- `POST /feedback/suggest`
+- `GET /feedback/user-progress`
+- `POST /feedback/log`
 
 ---
 
-## 📚 Features Guide
+## 🧭 Feature Usage Guide
 
-### **Using Archaeology Engine**
+### Archaeology
 
-1. Start a study session
-2. Click **Archaeology** button
-3. Provide topic/question
-4. Get temporal analysis of confusion patterns
+1. Select **Archaeology**
+2. Set topic + confusion level
+3. Submit confusion statement
+4. Review past-pattern recommendation
 
-### **Using Socratic Agent**
+### Socratic
 
-1. Click **Socratic** button
-2. Share your understanding of a topic
-3. Receive challenging questions
-4. Refine your thinking
+1. Select **Socratic**
+2. Enter belief/understanding
+3. Answer follow-up questions
+4. Use hints if stuck
 
-### **Using Cognitive Shadow**
+### Shadow
 
-1. Share your learning approach
-2. Click **Shadow** button
-3. Receive feedback on your cognitive patterns
+1. Select **Shadow**
+2. Set current topic
+3. Request prediction
+4. Review warning signals and micro-actions
 
-### **Generating Study Summaries**
+### Resonance
 
-1. Have a conversation in any feature
-2. Click **Memory** tab
-3. Click **Generate Summary**
-4. View preview in chat
-5. Click **Download PDF** for topic-based study plan
+1. Select **Resonance**
+2. Enter topic
+3. Review concept links and why they matter
 
-### **Analyzing Learning Resonance**
+### Contagion
 
-1. Click **Resonance** button
-2. Discuss multiple related concepts
-3. Discover connections and patterns
+1. Select **Contagion**
+2. Enter topic/error pattern
+3. Generate roadmap
+4. Follow the full personalized plan in order
 
----
+### Memory & Graphs
 
-## 📂 File Organization Guide
-
-### **Backend Files Explained**
-
-| File               | Purpose                                                   |
-| ------------------ | --------------------------------------------------------- |
-| `app/main.py`      | FastAPI app setup, CORS configuration, route registration |
-| `app/engines/`     | AI agents implementing different cognitive strategies     |
-| `app/routes/`      | REST API endpoint handlers                                |
-| `app/services/`    | Business logic and external service integration           |
-| `app/models/`      | Pydantic models for data validation                       |
-| `run.py`           | Development server launcher script                        |
-| `requirements.txt` | Python package dependencies                               |
-
-### **Frontend Files Explained**
-
-| File                  | Purpose                               |
-| --------------------- | ------------------------------------- |
-| `src/app/page.tsx`    | Main chat interface with feature tabs |
-| `src/app/layout.tsx`  | App wrapper and metadata              |
-| `src/services/api.ts` | HTTP client for backend communication |
-| `src/components/ui/`  | Reusable UI component library         |
-| `tailwind.config.ts`  | Tailwind CSS customization            |
-| `tsconfig.json`       | TypeScript configuration              |
-| `package.json`        | npm scripts and dependencies          |
-
----
-
-## 🔧 Configuration
-
-### **Backend Configuration Files**
-
-- `.env` - Environment variables (Groq API key)
-- `app/main.py` - CORS settings, app metadata
-
-### **Frontend Configuration Files**
-
-- `next.config.ts` - Next.js settings
-- `tsconfig.json` - TypeScript settings
-- `tailwind.config.ts` - Tailwind CSS theming
-
----
-
-## 📖 Development Tips
-
-### **Backend Development**
-
-- API routes auto-reload when you modify code
-- Check `http://localhost:8000/docs` for live API testing
-- Use test scripts in `backend/test_*.py` for validation
-
-### **Frontend Development**
-
-- Hot reload enabled for `.tsx` files
-- Tailwind CSS changes apply instantly
-- Use browser DevTools for debugging
-
-### **Testing**
-
-```bash
-# Backend tests
-cd backend
-python test_minimal_api.py
-python test_routes_with_hindsight.py
-```
-
----
-
-## 📊 Plugin System
-
-The application uses the following plugins/integrations:
-
-### **Frontend Plugins**
-
-- **Radix UI** - Accessible component library
-- **Tailwind CSS** - Utility-first CSS framework
-- **TypeScript** - Static type checking
-
-### **Backend Plugins**
-
-- **Hindsight Client** - Conversation memory library
-- **Groq API** - Large language model inference
-- **ReportLab/FPDF2** - PDF generation
-- **Pydantic** - Data validation
-
----
-
-## 🎓 Learning Resources
-
-### **Key Components**
-
-1. **Engines** - Read `backend/app/engines/` for AI agent implementations
-2. **Routes** - Check `backend/app/routes/` for API endpoint patterns
-3. **Services** - See `backend/app/services/` for business logic
-4. **Frontend** - Study `frontend/src/app/page.tsx` for React patterns
-
-### **API Testing**
-
-- Use Swagger UI at `/docs` for interactive testing
-- Check request/response formats
-- Test error scenarios
-
----
-
-## 🤝 Contributing
-
-When contributing to Cogni:
-
-1. Keep API routes RESTful and consistent
-2. Add descriptive docstrings to new functions
-3. Test features in both `/` and `/api/` paths
-4. Update this README with new features
-5. Follow existing code style and patterns
-
----
-
-## 📝 Environment Variables
-
-Create a `.env` file in the `backend/` directory:
-
-```bash
-# Required
-GROQ_API_KEY=your_groq_api_key_here
-
-# Optional (defaults provided)
-# DEBUG=true
-# LOG_LEVEL=info
-```
+1. Open **Memory** or **Graphs**
+2. Refresh analytics
+3. Review confidence trends, timeline, and profile insights
 
 ---
 
 ## 🐛 Troubleshooting
 
-### **Common Issues**
+### 500 on contagion endpoint
 
-**PDF not generating?**
+- Ensure backend is running latest code and dependencies.
+- Restart backend after updates to engine signatures.
+- Verify endpoint in browser/Swagger:
+  - `GET /insights/contagion?error_pattern=recursion&user_id=student`
 
-- Ensure reportlab and fpdf2 are installed: `pip install reportlab fpdf2`
+### Frontend shows fallback text
 
-**API endpoint not found?**
+- Check backend status in UI (online/offline indicator).
+- Confirm response `status` is `success` in network tab.
+- Verify `learning_plan` exists in `data` payload.
 
-- Check that all routers are included in `app/main.py`
-- Try both `/` and `/api/` prefixes
+### LLM behavior seems generic
 
-**Frontend can't connect to backend?**
-
-- Ensure backend is running on port 8000
-- Check CORS settings in `app/main.py`
-
-**Getting API errors?**
-
-- Check Groq API key is set in `.env`
-- Visit `/docs` to test endpoints directly
+- Confirm `GROQ_API_KEY` in `backend/.env`.
+- Check backend logs for upstream errors/timeouts.
 
 ---
 
-## 📄 Additional Notes
+## 🤝 Contributing
 
-- All timestamps are recorded for learning analysis
-- Conversations are processed with Hindsight memory technology
-- PDF summaries use dynamic filenames based on learning topics
-- The application is designed for interactive learning sessions
+- Keep route contracts backward compatible.
+- Add fallbacks when introducing LLM-dependent features.
+- Validate both backend and frontend behavior after changes.
+- Update docs when endpoints or payloads evolve.
 
 ---
 
-## 🎉 Ready to Learn!
+## 🎉 Final Note
 
-Your Cogni application is ready to help you master subjects through intelligent metacognitive analysis. Start a conversation, pick a feature, and let AI-powered insights guide your learning journey!
-
-For questions or issues, check the API documentation at `http://localhost:8000/docs`
+Cogni is built to be both **adaptive** and **reliable**: memory-grounded where possible, LLM-augmented where useful, and safe-fallback by default.

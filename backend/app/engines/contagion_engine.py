@@ -419,7 +419,8 @@ Success: [0.75-0.95]"""
         topic: str,
         peer_strategies: str,
         personal_context: Dict[str, Any],
-        memory_context: str = ""
+        memory_context: str = "",
+        personal_strategies: List[Dict[str, Any]] | None = None,
     ) -> str:
         """
         UPGRADE: Generate a mentor-guided learning plan for the topic using LLM.
@@ -429,8 +430,12 @@ Success: [0.75-0.95]"""
         No percentages, bullet symbols, or meta explanations.
         """
         if not self.llm.available:
-            # Safe fallback
-            return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
+            return self._build_fallback_learning_plan(
+                topic=topic,
+                personal_context=personal_context,
+                peer_strategies=peer_strategies,
+                personal_strategies=personal_strategies,
+            )
         
         # Build context
         learning_style = personal_context.get("learning_style", "adaptive")
@@ -512,14 +517,74 @@ Format: Just the plan text, nothing else."""
             final_plan = "\n\n".join(cleaned_lines).strip()
             
             # Fallback if empty
-            if not final_plan or len(final_plan) < 50:
-                return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
+            if not final_plan or len(final_plan) < 120:
+                return self._build_fallback_learning_plan(
+                    topic=topic,
+                    personal_context=personal_context,
+                    peer_strategies=peer_strategies,
+                    personal_strategies=personal_strategies,
+                )
             
             return final_plan
             
         except Exception as e:
             print(f"[DEBUG] Learning plan generation failed: {e}")
-            return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
+            return self._build_fallback_learning_plan(
+                topic=topic,
+                personal_context=personal_context,
+                peer_strategies=peer_strategies,
+                personal_strategies=personal_strategies,
+            )
+
+    def _build_fallback_learning_plan(
+        self,
+        topic: str,
+        personal_context: Dict[str, Any],
+        peer_strategies: str,
+        personal_strategies: List[Dict[str, Any]] | None = None,
+    ) -> str:
+        """Deterministic full roadmap fallback when LLM output is unavailable/weak."""
+        learning_style = str(personal_context.get("learning_style", "adaptive"))
+        strategy_rows = personal_strategies or []
+        top_personal = ""
+        for row in strategy_rows:
+            strategy_text = str(row.get("strategy", "")).strip()
+            if strategy_text:
+                top_personal = strategy_text
+                break
+
+        peer_hint = str(peer_strategies or "").strip()
+        style_nudge = {
+            "visual": "Use diagrams, maps, and visual traces while studying each step.",
+            "kinesthetic": "Write and run small examples in each step before moving on.",
+            "auditory": "Explain each step out loud to check if your reasoning is clear.",
+            "reading-writing": "Summarize each step in your own words after solving one example.",
+            "adaptive": "Switch between examples, short notes, and quick practice checks.",
+        }.get(learning_style, "Switch between examples, short notes, and quick practice checks.")
+
+        step_two = (
+            f"Step 2: Practice one focused method that has worked in your history: {top_personal}. "
+            "Run it on 3 small examples and write why each attempt worked or failed."
+            if top_personal
+            else f"Step 2: Solve 3 small, focused exercises on {topic} and capture the exact mistake pattern in each attempt."
+        )
+
+        step_three = (
+            f"Step 3: Add a peer-proven approach: {peer_hint}. "
+            "Compare it against your current approach and keep the parts that reduce mistakes fastest."
+            if peer_hint
+            else f"Step 3: Review one high-quality peer solution for {topic} and compare its decision process with your own."
+        )
+
+        return (
+            f"Step 1: Start by breaking {topic} into 3 core subskills and study them in order from easiest to hardest. "
+            "For each subskill, define one success checkpoint so progress is measurable.\n\n"
+            f"{step_two}\n\n"
+            f"{step_three}\n\n"
+            f"Step 4: Build one integrated practice task on {topic} that combines all subskills. "
+            "After finishing, reflect on where confusion returned and revise your checklist before the next session.\n\n"
+            f"Step 5: Use this learning-style guide every session: {style_nudge}"
+        )
     
     def _generate_default_strategy(self, topic: str) -> str:
         """Generate a sensible default strategy for any topic."""
