@@ -1,0 +1,38 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="ring" x1="64" y1="96" x2="448" y2="432" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+    <linearGradient id="wand" x1="180" y1="300" x2="332" y2="172" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="0.5" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#EC4899"/>
+    </linearGradient>
+    <linearGradient id="text" x1="160" y1="384" x2="352" y2="448" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7C3AED"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <filter id="glow" x="0" y="0" width="512" height="512" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <circle cx="256" cy="256" r="206" stroke="url(#ring)" stroke-width="10" filter="url(#glow)"/>
+
+  <path d="M169 248C169 224 188 206 212 206C220 206 228 208 235 212" stroke="#8B5CF6" stroke-width="12" stroke-linecap="round"/>
+  <path d="M301 212C308 208 316 206 324 206C348 206 367 224 367 248C367 264 359 278 347 286" stroke="#A855F7" stroke-width="12" stroke-linecap="round"/>
+  <path d="M214 288C224 302 240 311 258 311C276 311 292 302 302 288" stroke="#6D28D9" stroke-width="12" stroke-linecap="round"/>
+
+  <rect x="180" y="300" width="210" height="22" rx="11" transform="rotate(-45 180 300)" fill="url(#wand)"/>
+  <circle cx="292" cy="176" r="10" fill="#E879F9"/>
+  <path d="M316 156L321 168L333 173L321 178L316 190L311 178L299 173L311 168L316 156Z" fill="#F0ABFC"/>
+  <path d="M274 149L278 158L287 162L278 166L274 175L270 166L261 162L270 158L274 149Z" fill="#C084FC"/>
+
+  <text x="256" y="380" text-anchor="middle" fill="url(#text)" font-family="Inter, Arial, sans-serif" font-size="78" font-weight="800" letter-spacing="-1.5">Cogni</text>
+</svg>

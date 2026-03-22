@@ -65,6 +65,15 @@ interface Message {
   metadata?: Record<string, unknown>;
 }
 
+type ShadowPredictionCard = {
+  title: string;
+  description: string;
+  trigger_condition: string;
+  suggested_micro_action: string;
+  difficulty?: string;
+  confidence?: number;
+};
+
 type GenericRecord = Record<string, unknown>;
 type APIShape = {
   data?: unknown;
@@ -75,6 +84,7 @@ type QuizQuestion = {
   id: number;
   question: string;
   expected_answer: string;
+  options: string[];
 };
 
 const FEATURES: {
@@ -168,7 +178,7 @@ const QUICK_PROMPTS: Record<FeatureMode, string[]> = {
 };
 export default function ChatPage() {
   // Intro screen state
-  const [isStarted, setIsStarted] = useState(true);
+  const [isStarted, setIsStarted] = useState<boolean | null>(null);
   const [activeFeature, setActiveFeature] =
     useState<FeatureMode>("archaeology");
   const [messages, setMessages] = useState<Message[]>([]);
@@ -205,9 +215,11 @@ export default function ChatPage() {
   const [memoryLearningProfile, setMemoryLearningProfile] = useState<LearningProfile | null>(null);
   const [memoryPerformanceOverview, setMemoryPerformanceOverview] = useState<Record<string, unknown> | null>(null);
   const [memoryLastUpdatedAt, setMemoryLastUpdatedAt] = useState<string | null>(null);
+  const memoryRefreshRequestRef = useRef(0);
   // UPGRADE: User session persisted to localStorage
   const [userId, setUserIdState] = useState("student");
   const [showUserIdInput, setShowUserIdInput] = useState(false);
+  const [dismissedGuides, setDismissedGuides] = useState<Partial<Record<FeatureMode, boolean>>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -227,14 +239,10 @@ export default function ChatPage() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("start") === "1") {
-      setIsStarted(true);
-      localStorage.setItem("cogni_started", "1");
-    }
-
-    const started = localStorage.getItem("cogni_started");
-    if (started === "1") {
-      setIsStarted(true);
+    const startedFromParam = params.get("start") === "1";
+    setIsStarted(startedFromParam);
+    if (!startedFromParam) {
+      localStorage.removeItem("cogni_started");
     }
 
     const stored = localStorage.getItem("cogni_user_id");
@@ -271,17 +279,22 @@ export default function ChatPage() {
   }, []);
 
   const refreshMemoryVisualization = async (forceRefresh: boolean = false) => {
+    const requestId = memoryRefreshRequestRef.current + 1;
+    memoryRefreshRequestRef.current = requestId;
+
     setMemoryVizError(null);
-    if (!memoryTimelineEntries.length) {
-      setMemoryVizLoading(true);
-    }
+    setMemoryVizLoading(true);
 
     try {
       const [timelineRes, confidenceRes, summaryRes] = await Promise.all([
-        api.getMemoryTimeline(userId, 50),
-        api.getMemoryConfidence(userId, 6, 180),
+        api.getMemoryTimeline(userId, 120),
+        api.getMemoryConfidence(userId, 8, 300),
         api.getMemoryCognitiveSummary(userId, forceRefresh),
       ]);
+
+      if (requestId !== memoryRefreshRequestRef.current) {
+        return;
+      }
 
       const timelinePayload = (timelineRes.data as Record<string, unknown> | undefined) || {};
       const timelineRaw = Array.isArray(timelinePayload.timeline)
@@ -382,7 +395,32 @@ export default function ChatPage() {
       setMemoryVizLoading(false);
     }
   };
-  const handleSend = async () => {
+
+  useEffect(() => {
+    const analyticsView = activeFeature === "graphs" || activeFeature === "memory";
+    if (!analyticsView || memoryVizLoading) {
+      return;
+    }
+
+    const hasAnyData =
+      memoryTimelineEntries.length > 0 ||
+      memoryConfidenceSeries.length > 0 ||
+      !!memorySummaryText;
+
+    if (!hasAnyData) {
+      void refreshMemoryVisualization(true);
+    }
+  }, [
+    activeFeature,
+    userId,
+    memoryVizLoading,
+    memoryTimelineEntries.length,
+    memoryConfidenceSeries.length,
+    memorySummaryText,
+  ]);
+
+  const handleSend = async (overrideInput?: string) => {
+    const activeInput = (overrideInput ?? input).trim();
     // Resonance and Contagion use header topic field, not main input
     const requiresInput = [
       "archaeology",
@@ -392,7 +430,7 @@ export default function ChatPage() {
     // For contagion, check context.topic instead
     if (activeFeature === "contagion") {
       if (!context.topic?.trim()) return;
-    } else if (requiresInput && !input.trim()) {
+    } else if (requiresInput && !activeInput) {
       setMessages((prev) => [
         ...prev,
         {
@@ -412,13 +450,13 @@ export default function ChatPage() {
     
     if (loading) return;
 
-    const requestQuery = input.trim() || context.topic || "general";
+    const requestQuery = activeInput || context.topic || "general";
 
     if (requiresInput) {
       const userMessage: Message = {
         id: Date.now().toString(),
         role: "user",
-        content: input,
+        content: activeInput,
         feature: activeFeature,
         timestamp: new Date(),
       };
@@ -451,39 +489,47 @@ export default function ChatPage() {
 
       switch (activeFeature) {
         case "archaeology": {
-          const topic = context.topic || extractTopic(input);
+          const topic = context.topic || extractTopic(activeInput);
           const confusion = context.confusion || 3;
           response = await api.getArchaeology(topic, confusion, userId);
           break;
         }
 
         case "socratic": {
-          const concept = context.topic || extractTopic(input);
+          const concept = context.topic || extractTopic(activeInput);
           const confusion = context.confusion || 3;
           
           // Check if the previous message was a Socratic question (ending with ?)
           // If so, treat the current input as a response and reflect instead of asking
           const prevMessage = messages[messages.length - 1];
-          const shouldReflect = prevMessage?.role === "assistant" && prevMessage?.content?.endsWith("?");
+          const prevMetadata = (prevMessage?.metadata || {}) as GenericRecord;
+          const previousQuestion =
+            typeof prevMetadata.current_question === "string" && prevMetadata.current_question.trim()
+              ? prevMetadata.current_question
+              : prevMessage?.content;
+          const shouldReflect =
+            prevMessage?.role === "assistant" &&
+            typeof previousQuestion === "string" &&
+            previousQuestion.trim().endsWith("?");
           
-          if (shouldReflect && prevMessage?.content) {
+          if (shouldReflect && previousQuestion) {
             // User is responding to a previous Socratic question - reflect on the response
             response = await api.reflectSocratic(
               concept,
-              input,
-              prevMessage.content,
+              activeInput,
+              previousQuestion,
               userId,
               confusion
             );
           } else {
             // First question or starting a new line of thinking
-            response = await api.askSocratic(concept, input, userId, confusion);
+            response = await api.askSocratic(concept, activeInput, userId, confusion);
           }
           break;
         }
 
         case "shadow": {
-          const shadowTopic = context.topic || extractTopic(input);
+          const shadowTopic = context.topic || extractTopic(activeInput);
           response = await api.getShadowPrediction(shadowTopic, 7, userId);
           break;
         }
@@ -496,7 +542,7 @@ export default function ChatPage() {
 
         case "contagion": {
           // UPGRADE: Use header topic field like Archaeology, not main input
-          const contagionTopic = context.topic || input.trim();
+          const contagionTopic = context.topic || activeInput;
           if (!contagionTopic) {
             setMessages((prev) => [
               ...prev,
@@ -516,40 +562,15 @@ export default function ChatPage() {
         }
 
         case "memory": {
-          // Fetch enhanced memory data: timeline + what-cogni-knows
-          const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
-          
-          try {
-            // Fetch timeline for learning progression
-            const timelineRes = await fetch(`${API_URL}/memory/timeline?user_id=${userId}`, {
-              method: "GET",
-              headers: { "Content-Type": "application/json" }
-            });
-            const timelineRawData = timelineRes.ok ? await timelineRes.json() : null;
-            // Extract data from APIResponse wrapper
-            const timelineData = timelineRawData?.data || timelineRawData;
-            
-            // Fetch "What Cogni knows about you" summary
-            const cogniRes = await fetch(`${API_URL}/memory/what-cogni-knows?user_id=${userId}`, {
-              method: "GET",
-              headers: { "Content-Type": "application/json" }
-            });
-            const cogniRawData = cogniRes.ok ? await cogniRes.json() : null;
-            // Extract data from APIResponse wrapper
-            const cogniData = cogniRawData?.data || cogniRawData;
-            
-            response = {
-              data: {
-                timeline: timelineData,
-                cogni_knows: cogniData,
-                enhanced_memory: true
+          await refreshMemoryVisualization(true);
+          response = {
+            data: {
+              result: {
+                recommendation:
+                  "Memory and confidence analytics refreshed from Hindsight. Check Graphs for updated student analysis.",
               },
-              demo_mode: timelineRawData?.demo_mode || cogniRawData?.demo_mode || false
-            };
-          } catch (err) {
-            console.error("Memory fetch error:", err);
-            response = await api.getMemories(10);
-          }
+            },
+          };
           break;
         }
 
@@ -722,11 +743,12 @@ export default function ChatPage() {
   };
 
   const handleQuickPrompt = (prompt: string) => {
-    if (activeFeature === "shadow" || activeFeature === "memory") {
-      void handleSend();
+    if (activeFeature === "shadow") {
+      setContext((prev) => ({ ...prev, topic: extractTopic(prompt) }));
+      void handleShadowPredict();
       return;
     }
-    if (activeFeature === "graphs") {
+    if (activeFeature === "graphs" || activeFeature === "memory") {
       void refreshMemoryVisualization(true);
       return;
     }
@@ -741,6 +763,78 @@ export default function ChatPage() {
       setContext((prev) => ({ ...prev, topic: extractTopic(prompt) }));
     }
     setInput(prompt);
+  };
+
+  const handleSocraticHint = async () => {
+    if (loading || activeFeature !== "socratic") return;
+
+    const latestQuestion = getLatestSocraticQuestion(messages);
+    if (!latestQuestion) return;
+
+    const concept = context.topic || extractTopic(latestQuestion);
+    const confusion = context.confusion || 3;
+
+    setLoading(true);
+    try {
+      const response = await api.getSocraticHint(
+        concept,
+        latestQuestion,
+        userId,
+        confusion,
+        input.trim()
+      );
+
+      const payload = (response.data as GenericRecord | undefined) || {};
+      const result = (payload.result as GenericRecord | undefined) || payload;
+      const hint = String(result.hint || "Start with one concrete example before answering the question.");
+
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 2).toString(),
+          role: "assistant",
+          content: `**Hint**: ${hint}`,
+          feature: "socratic",
+          timestamp: new Date(),
+          metadata: {
+            current_question: latestQuestion,
+            is_hint: true,
+            user_query: latestQuestion,
+          },
+        },
+      ]);
+    } catch {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 2).toString(),
+          role: "assistant",
+          content: "Could not fetch a hint right now. Try answering with what you know so far.",
+          feature: "socratic",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShadowPredict = async () => {
+    const topic = (context.topic || input).trim();
+    if (!topic) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 8).toString(),
+          role: "assistant",
+          content: "Set a target topic first, then click **Predict My Next Struggles**.",
+          feature: "shadow",
+          timestamp: new Date(),
+        },
+      ]);
+      return;
+    }
+    await handleSend(topic);
   };
 
   // UPGRADE: Generate conversation summary
@@ -958,10 +1052,23 @@ export default function ChatPage() {
       const parsedQuestions: QuizQuestion[] = rawQuestions
         .map((row, idx) => {
           const record = row as Record<string, unknown>;
+          const optionsRaw = Array.isArray(record.options)
+            ? (record.options as unknown[]).map((opt) => String(opt ?? "").trim()).filter(Boolean)
+            : [];
+          const expectedAnswer = String(record.expected_answer ?? "");
+          const options = optionsRaw.length
+            ? optionsRaw
+            : [
+                expectedAnswer,
+                `A common misconception about ${topic}`,
+                `A partially correct statement about ${topic}`,
+                `A related but different concept from ${topic}`,
+              ];
           return {
             id: Number(record.id ?? idx + 1),
             question: String(record.question ?? ""),
-            expected_answer: String(record.expected_answer ?? ""),
+            expected_answer: expectedAnswer,
+            options: options.slice(0, 4),
           };
         })
         .filter((q) => q.question && q.expected_answer)
@@ -1166,61 +1273,117 @@ export default function ChatPage() {
     }
   };
 
-  if (!isStarted) {
+  if (isStarted === null) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-[#09090b] text-zinc-100 relative overflow-hidden font-sans selection:bg-purple-500/30">
-        {/* SaaS-grade dynamic background */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))]" />
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay pointer-events-none" />
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-purple-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none" style={{ animationDuration: '8s' }} />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-indigo-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none" style={{ animationDuration: '10s', animationDelay: '2s' }} />
-
-        <div className="z-10 flex flex-col items-center max-w-4xl text-center px-6 animate-in fade-in zoom-in duration-1000 slide-in-from-bottom-8">
-          {/* Premium Badge */}
-          <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-sm font-medium text-purple-300 shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-md transition-all hover:bg-white/10 cursor-default">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-75"></span>
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-purple-500"></span>
-            </span>
-            Cognitive Intelligence Engine v2.0
-          </div>
-
-          {/* Main Logo & Title */}
-          <div className="mb-8 rounded-2xl bg-gradient-to-br from-purple-500/10 to-indigo-500/10 p-6 ring-1 ring-white/10 shadow-[0_0_60px_rgba(168,85,247,0.15)] backdrop-blur-sm transition-transform duration-500 hover:scale-105">
-            <MagicWandIcon className="h-16 w-16 text-purple-400 drop-shadow-md" />
-          </div>
-          <h1 className="mb-4 pt-2 pb-6 px-4 text-7xl md:text-8xl font-extrabold leading-tight tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-zinc-100 via-zinc-300 to-zinc-500 drop-shadow-sm">
-            Learn with <span className="bg-gradient-to-br from-purple-400 to-indigo-500 bg-clip-text text-transparent">Hindsight</span>
-          </h1>
-          <p className="mb-14 text-lg md:text-xl text-zinc-400 leading-relaxed max-w-2xl font-light tracking-wide">
-            Your intelligent study companion. It remembers your struggles, adapts to your patterns, and helps you master complex topics through metacognitive analysis.
-          </p>
-          
-          {/* CTA Button */}
-          <Button
-            onClick={enterApp}
-            onMouseDown={enterApp}
-            onTouchStart={enterApp}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") enterApp();
-            }}
-            className="group relative h-14 overflow-hidden rounded-full bg-zinc-100 px-10 text-[16px] font-semibold text-zinc-950 transition-all duration-300 hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.3)] active:scale-95 border border-transparent hover:border-white/50"
-          >
-            <span className="relative z-10 flex items-center gap-2">
-              Launch Workspace
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 transition-transform duration-300 group-hover:translate-x-1">
-                <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
-              </svg>
-            </span>
-          </Button>
+      <div className="flex h-screen items-center justify-center bg-[#09090b] text-zinc-300">
+        <div className="rounded-full border border-white/10 bg-white/5 px-5 py-2 text-sm backdrop-blur-sm">
+          Preparing your workspace...
         </div>
       </div>
     );
   }
 
+  if (!isStarted) {
+    return (
+      <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#030305] text-zinc-100 font-sans selection:bg-purple-500/30">
+        {/* Animated Background Gradients & Grid */}
+        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_right,#8080800a_1px,transparent_1px),linear-gradient(to_bottom,#8080800a_1px,transparent_1px)] bg-[size:24px_24px]" />
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))]" />
+        
+        {/* Glowing Orbs */}
+        <div className="pointer-events-none absolute top-[10%] left-[20%] h-[400px] w-[400px] rounded-full bg-purple-600/10 blur-[120px] mix-blend-screen" />
+        <div className="pointer-events-none absolute bottom-[10%] right-[20%] h-[400px] w-[400px] rounded-full bg-indigo-600/10 blur-[120px] mix-blend-screen" />
+
+        <div className="z-10 flex w-full max-w-5xl flex-col items-center px-6 text-center animate-in fade-in zoom-in-95 duration-700 slide-in-from-bottom-8">
+          
+          {/* Top Premium Badge */}
+          <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-purple-500/20 bg-purple-500/10 px-4 py-1.5 text-xs font-semibold uppercase tracking-wider text-purple-300 backdrop-blur-md transition-all hover:bg-purple-500/20 cursor-default shadow-[0_0_20px_rgba(168,85,247,0.1)]">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-75"></span>
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-purple-500"></span>
+            </span>
+            MetaCognitive Intelligence Engine 
+          </div>
+
+          {/* Logo Container with Glow */}
+          <div className="relative mb-8 group">
+            <div className="absolute -inset-1 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 opacity-40 blur-lg transition duration-500 group-hover:opacity-75"></div>
+            <div className="relative flex h-24 w-24 items-center justify-center rounded-full border border-white/10 bg-[#09090b] shadow-2xl transition-transform duration-300 group-hover:scale-105">
+               <img
+                src="/cogni-logo.svg"
+                alt="Cogni logo"
+                className="h-16 w-16 rounded-full object-contain"
+              />
+            </div>
+          </div>
+
+          {/* Hero Typography */}
+          <h1 className="mb-6 px-2 text-6xl font-extrabold leading-tight tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-white via-zinc-200 to-zinc-500 md:text-8xl drop-shadow-sm">
+         Learn With<span className="bg-gradient-to-br from-purple-400 to-indigo-500 bg-clip-text text-transparent"> Cogni</span>
+          </h1>
+
+          <p className="mb-12 max-w-2xl text-lg leading-relaxed text-zinc-400 md:text-xl font-light">
+            Understand how you think, not just what you learn. Cogni remembers your struggles and adapts to your unique cognitive patterns.
+          </p>
+
+          {/* CTA Button */}
+          <Button
+            onClick={enterApp}
+            className="group relative mb-20 h-14 overflow-hidden rounded-full bg-zinc-100 px-10 text-[16px] font-semibold text-zinc-950 transition-all duration-300 hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.3)] active:scale-95 border border-transparent hover:border-white/50"
+          >
+            <span className="relative z-10 flex items-center gap-2">
+              Let's Start Studying
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 transition-transform duration-300 group-hover:translate-x-1">
+                <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
+              </svg>
+            </span>
+          </Button>
+
+          {/* Feature Bento Grid */}
+          <div className="grid w-full max-w-5xl grid-cols-1 gap-4 text-left sm:grid-cols-2 lg:grid-cols-4">
+            {[
+              { title: "Socratic Thinking", icon: "🧠", subtitle: "Challenge assumptions", border: "hover:border-purple-500/50" },
+              { title: "Predict Struggles", icon: "🌑", subtitle: "See weak signals early", border: "hover:border-indigo-500/50" },
+              { title: "Memory Insights", icon: "🧩", subtitle: "Review what truly sticks", border: "hover:border-emerald-500/50" },
+              { title: "Learning Graphs", icon: "📊", subtitle: "Track growth with clarity", border: "hover:border-cyan-500/50" },
+            ].map((item) => (
+              <div
+                key={item.title}
+                className={`group relative overflow-hidden rounded-2xl border border-white/5 bg-white/[0.02] p-6 backdrop-blur-xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl hover:bg-white/[0.04] ${item.border}`}
+              >
+                <div className="mb-4 text-3xl transition-transform duration-300 group-hover:scale-110 group-hover:-rotate-3">{item.icon}</div>
+                <p className="text-base font-semibold text-zinc-100">{item.title}</p>
+                <p className="mt-1.5 text-sm text-zinc-400 font-light">{item.subtitle}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Footer Navigation Elements */}
+          <div className="mt-14 flex flex-wrap items-center justify-center gap-3 text-xs text-zinc-500 font-medium">
+            <span className="rounded-full border border-white/5 bg-white/5 px-4 py-1.5 transition-colors hover:text-zinc-300 hover:bg-white/10 cursor-default">7 Cognitive Modes</span>
+            <span className="hidden sm:block h-1 w-1 rounded-full bg-zinc-800"></span>
+            <span className="rounded-full border border-white/5 bg-white/5 px-4 py-1.5 transition-colors hover:text-zinc-300 hover:bg-white/10 cursor-default">Adaptive Memory</span>
+            <span className="hidden sm:block h-1 w-1 rounded-full bg-zinc-800"></span>
+            <span className="rounded-full border border-white/5 bg-white/5 px-4 py-1.5 transition-colors hover:text-zinc-300 hover:bg-white/10 cursor-default">Realtime Feedback</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const latestSocraticQuestion = getLatestSocraticQuestion(messages);
+  const showSocraticQuickActions = activeFeature === "socratic" && !!latestSocraticQuestion;
+  const showShadowQuickAction = activeFeature === "shadow";
+  const guidedFlow = getGuidedFlow(activeFeature, context, messages, quizQuestions.length);
+  const showGuide = !!guidedFlow && !dismissedGuides[activeFeature];
+  const usesFloatingComposer = activeFeature === "archaeology" || activeFeature === "socratic";
+  const showInlineComposer = usesFloatingComposer && messages.length <= 1 && !loading;
+  const mainBottomPaddingClass = usesFloatingComposer && !showInlineComposer ? "pb-32 md:pb-40" : "";
+  const compactEmptyState = messages.length <= 1 && !loading;
+
   return (
     <div className="flex h-screen bg-zinc-900 text-white">
-      <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 p-5">
+      <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950/95 p-5 backdrop-blur-xl">
         <div className="flex items-center gap-2">
           <MagicWandIcon className="h-10 w-10 text-purple-500" />
           <h1 className="bg-gradient-to-r from-purple-400 to-indigo-400 bg-clip-text pb-3 pt-1 pr-1 text-4xl font-extrabold leading-tight tracking-tight text-transparent drop-shadow-md">Cogni</h1>
@@ -1235,8 +1398,8 @@ export default function ChatPage() {
               onClick={() => setActiveFeature(feature.id)}
               className={`justify-start gap-4 text-base transition-all duration-200 ${
                 activeFeature === feature.id
-                  ? "bg-purple-500/15 font-medium text-purple-300 shadow-[inset_4px_0_0_0_rgba(168,85,247,0.8)] hover:bg-purple-500/25"
-                  : "text-zinc-400 font-normal hover:bg-zinc-800 hover:text-zinc-200"
+                  ? "bg-gradient-to-r from-purple-500/25 to-indigo-500/20 font-medium text-purple-200 shadow-[inset_4px_0_0_0_rgba(168,85,247,0.9),0_0_20px_rgba(99,102,241,0.15)] hover:from-purple-500/30 hover:to-indigo-500/25"
+                  : "text-zinc-400 font-normal hover:bg-zinc-800/80 hover:text-zinc-200"
               }`}
             >
               <span className="scale-110">{feature.icon}</span>
@@ -1296,10 +1459,11 @@ export default function ChatPage() {
                   variant="outline"
                   size="sm"
                   onClick={() => setShowUserIdInput(!showUserIdInput)}
-                  className="text-xs text-zinc-400 border-zinc-600 hover:bg-zinc-800/50 h-8 px-3"
+                  className="text-xs text-zinc-300 border-zinc-600 hover:bg-zinc-800/50 h-8 px-3"
                 >
-                  👤 {userId}
+                  👤 {userId} ✏️
                 </Button>
+                <p className="text-[11px] text-zinc-500">Tip: Personalize your ID by changing one letter.</p>
                 {showUserIdInput && (
                   <input
                     type="text"
@@ -1384,8 +1548,28 @@ export default function ChatPage() {
               </div>
             )}
           </div>
+          {showGuide && guidedFlow && (
+            <div className="mt-4 rounded-xl border border-indigo-400/25 bg-indigo-500/10 px-4 py-3 backdrop-blur-sm animate-in fade-in duration-300">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-medium text-indigo-200">{guidedFlow.title}</p>
+                <button
+                  type="button"
+                  onClick={() => setDismissedGuides((prev) => ({ ...prev, [activeFeature]: true }))}
+                  className="rounded-md p-1 text-zinc-400 hover:bg-white/10 hover:text-zinc-100"
+                  aria-label="Dismiss guide"
+                >
+                  <Cross1Icon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-zinc-300">{guidedFlow.helper}</p>
+              <div className="mt-2 text-xs text-zinc-400">
+                <span className="mr-3">Step 1: {guidedFlow.step1}</span>
+                <span>Step 2: {guidedFlow.step2}</span>
+              </div>
+            </div>
+          )}
         </header>
-        <main className="flex-1 scroll-smooth overflow-y-auto p-6 md:p-10">
+        <main className={`flex-1 scroll-smooth overflow-y-auto p-6 md:p-10 ${mainBottomPaddingClass}`}>
           {activeFeature !== "graphs" && (
             <div className="space-y-6 pb-24 md:pb-32 max-w-4xl mx-auto">
               {messages.map((msg) => (
@@ -1402,7 +1586,7 @@ export default function ChatPage() {
             </div>
           )}
           {activeFeature !== "graphs" && messages.length <= 1 && !loading && (
-            <div className="mt-12">
+            <div className={`mx-auto max-w-4xl ${showInlineComposer ? "-mt-1 mb-4" : "mt-12"}`}>
               <h3 className="mb-6 text-center text-[15px] font-medium tracking-wide text-zinc-400 uppercase">
                 Suggestions
               </h3>
@@ -1422,9 +1606,9 @@ export default function ChatPage() {
             </div>
           )}
           {activeFeature === "contagion" ? (
-            <div className="mx-auto flex max-w-4xl justify-center gap-4 flex-wrap mt-8">
+            <div className={`mx-auto flex max-w-4xl flex-wrap justify-center gap-4 ${compactEmptyState ? "mt-4" : "mt-8"}`}>
               <Button
-                onClick={handleSend}
+                onClick={() => void handleSend()}
                 disabled={loading}
                 className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95"
               >
@@ -1439,9 +1623,9 @@ export default function ChatPage() {
               </Button>
             </div>
           ) : activeFeature === "resonance" ? (
-            <div className="mx-auto flex max-w-4xl justify-center">
+            <div className={`mx-auto flex max-w-4xl justify-center ${compactEmptyState ? "mt-4" : "mt-8"}`}>
               <Button
-                onClick={handleSend}
+                onClick={() => void handleSend()}
                 disabled={loading}
                 className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
               >
@@ -1455,8 +1639,25 @@ export default function ChatPage() {
                 )}
               </Button>
             </div>
+          ) : activeFeature === "shadow" ? (
+            <div className={`mx-auto flex max-w-4xl justify-center ${compactEmptyState ? "mt-4" : "mt-8"}`}>
+              <Button
+                onClick={() => void handleShadowPredict()}
+                disabled={loading}
+                className="h-14 rounded-full bg-purple-600 px-8 text-base font-medium text-white shadow-lg transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+                ) : (
+                  <>
+                    <CubeIcon className="mr-2 h-5 w-5" />
+                    Predict My Next Struggles
+                  </>
+                )}
+              </Button>
+            </div>
           ) : activeFeature === "memory" ? (
-            <div className="mx-auto flex w-full max-w-5xl flex-col gap-5">
+            <div className={`mx-auto flex w-full max-w-5xl flex-col gap-5 ${compactEmptyState ? "mt-4" : "mt-8"}`}>
               <div className="flex justify-center gap-3 flex-wrap">
                 <Button
                   onClick={showUserProgress}
@@ -1496,63 +1697,71 @@ export default function ChatPage() {
                 )}
               </div>
 
-              <Card className="border-zinc-700/60 bg-zinc-900/70 backdrop-blur-sm">
+              <Card className="border-zinc-700/60 bg-gradient-to-b from-zinc-900/80 to-zinc-950/80 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur-sm">
                 <CardHeader>
-                  <CardTitle className="text-zinc-100">Quick Quiz</CardTitle>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle className="text-zinc-100">Quick Quiz</CardTitle>
+                    {quizQuestions.length > 0 && (
+                      <span className="rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-300">
+                        {quizQuestions.length} Questions Ready
+                      </span>
+                    )}
+                  </div>
                   <CardDescription className="text-zinc-400">
                     Generate a 3-question revision quiz, submit answers, and store rich learning memory.
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex gap-3 flex-wrap items-end">
-                    <div className="flex-1 min-w-[220px]">
-                      <Label htmlFor="quiz-topic" className="text-zinc-300">Quiz Topic</Label>
+                <CardContent className="space-y-5">
+                  <div className="rounded-xl border border-zinc-700/70 bg-zinc-900/50 p-4">
+                    <div className="flex gap-3 flex-wrap items-end">
+                      <div className="flex-1 min-w-[220px]">
+                      <Label htmlFor="quiz-topic" className="text-zinc-200">Quiz Topic</Label>
                       <Input
                         id="quiz-topic"
                         value={quizTopic}
                         onChange={(e) => setQuizTopic(e.target.value)}
                         placeholder="e.g., recursion, graph traversal"
-                        className="mt-2 border-zinc-600 bg-zinc-950/60"
+                        className="mt-2 h-11 border-zinc-600 bg-zinc-950/70 text-zinc-100 placeholder:text-zinc-500 focus-visible:border-cyan-400/70 focus-visible:ring-cyan-400/30"
                       />
                     </div>
                     <Button
                       onClick={generateQuiz}
                       disabled={quizLoading || !quizTopic.trim()}
-                      className="h-11 rounded-lg bg-cyan-600 px-6 text-white hover:bg-cyan-500"
+                      className="h-11 rounded-lg bg-cyan-600 px-6 text-white shadow-md transition-all hover:scale-[1.02] hover:bg-cyan-500"
                     >
                       {quizLoading ? "Generating..." : "Generate Quiz"}
                     </Button>
                   </div>
+                  </div>
 
                   {quizQuestions.length > 0 && (
-                    <div className="space-y-4 pt-2">
+                    <div className="space-y-4 pt-1 animate-in fade-in duration-300">
                       {quizQuestions.map((q, idx) => (
-                        <div key={q.id} className="rounded-lg border border-zinc-700/70 bg-zinc-950/40 p-4">
-                          <p className="mb-3 text-sm font-semibold text-zinc-200">
-                            <span className="text-cyan-300">Q{idx + 1}.</span> {q.question}
+                        <div key={q.id} className="rounded-xl border border-zinc-700/70 bg-zinc-950/55 p-5 shadow-[0_6px_18px_rgba(0,0,0,0.28)] transition-all hover:border-cyan-500/40">
+                          <p className="mb-3 text-sm font-semibold text-zinc-100">
+                            <span className="mr-2 rounded-md bg-cyan-500/20 px-2 py-1 text-cyan-300">Q{idx + 1}</span>
+                            {q.question}
                           </p>
-                          <div className="space-y-2">
-                            {[
-                              q.expected_answer,
-                              "I don't know",
-                              "Different answer",
-                              "Need more context"
-                            ].map((option, optIdx) => (
-                              <button
-                                key={optIdx}
+                          <div className="space-y-2.5">
+                            {q.options.map((option, optionIdx) => (
+                              <Button
+                                key={`${q.id}-${option}`}
                                 onClick={() => {
                                   const next = [...quizAnswers];
                                   next[idx] = option;
                                   setQuizAnswers(next);
                                 }}
-                                className={`w-full p-3 text-left rounded-lg border-2 transition-all ${
+                                className={`w-full rounded-lg border-2 p-3 text-left transition-all ${
                                   quizAnswers[idx] === option
-                                    ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200 font-semibold'
-                                    : 'border-zinc-600 bg-zinc-900/40 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-900/60'
+                                    ? "border-cyan-400 bg-cyan-500/20 font-semibold text-cyan-100 shadow-[0_0_15px_rgba(34,211,238,0.2)]"
+                                    : "border-zinc-600 bg-zinc-900/40 text-zinc-300 hover:border-cyan-500/40 hover:bg-zinc-900/70"
                                 }`}
                               >
-                                • {option}
-                              </button>
+                                <span className="mr-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-zinc-800 text-xs text-zinc-300">
+                                  {String.fromCharCode(65 + optionIdx)}
+                                </span>
+                                {option}
+                              </Button>
                             ))}
                           </div>
                         </div>
@@ -1561,7 +1770,7 @@ export default function ChatPage() {
                       <Button
                         onClick={submitQuiz}
                         disabled={quizSubmitting || quizAnswers.some((a) => !a)}
-                        className="h-11 rounded-lg bg-emerald-600 px-6 text-white hover:bg-emerald-500"
+                        className="h-11 rounded-lg bg-emerald-600 px-6 text-white shadow-md transition-all hover:scale-[1.02] hover:bg-emerald-500"
                       >
                         {quizSubmitting ? "Submitting..." : "Submit Quiz"}
                       </Button>
@@ -1640,20 +1849,59 @@ export default function ChatPage() {
               </Card>
             </div>
           ) : (
-            <div className="fixed bottom-0 left-[280px] right-0 p-6 md:p-8 bg-gradient-to-t from-[#09090b] via-[#09090b]/95 to-transparent pointer-events-none z-10">
-              <div className="relative mx-auto flex max-w-4xl items-center rounded-2xl border border-white/10 bg-[#18181b]/90 shadow-[0_8px_40px_rgba(0,0,0,0.4)] backdrop-blur-2xl transition-all duration-300 focus-within:border-purple-500/50 focus-within:ring-4 focus-within:ring-purple-500/10 hover:border-white/20 pointer-events-auto">
+            <div
+              className={showInlineComposer
+                ? "mx-auto mt-0 mb-2 w-full max-w-4xl"
+                : "fixed bottom-0 left-[280px] right-0 z-10 bg-gradient-to-t from-[#09090b] via-[#09090b]/95 to-transparent p-6 md:p-8 pointer-events-none"
+              }
+            >
+              {showSocraticQuickActions && (
+                <div className={`mx-auto mb-3 flex max-w-4xl items-center gap-2 ${showInlineComposer ? "" : "pointer-events-auto"}`}>
+                  <Button
+                    variant="secondary"
+                    className="h-9 rounded-lg"
+                    disabled={loading}
+                    onClick={() => void handleSend("I don't know")}
+                  >
+                    I don&apos;t know
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="h-9 rounded-lg border-zinc-600 text-zinc-200"
+                    disabled={loading}
+                    onClick={() => void handleSocraticHint()}
+                  >
+                    Hint
+                  </Button>
+                </div>
+              )}
+              {showShadowQuickAction && (
+                <div className={`mx-auto mb-3 flex max-w-4xl items-center gap-2 ${showInlineComposer ? "" : "pointer-events-auto"}`}>
+                  <Button
+                    className="h-9 rounded-lg bg-amber-500/20 text-amber-200 border border-amber-400/30 hover:bg-amber-500/30"
+                    disabled={loading}
+                    onClick={() => void handleShadowPredict()}
+                  >
+                    {loading ? "Predicting..." : "Predict My Next Struggles"}
+                  </Button>
+                </div>
+              )}
+              <div className={`relative mx-auto flex max-w-4xl items-center rounded-2xl border border-white/10 bg-[#18181b]/90 shadow-[0_8px_40px_rgba(0,0,0,0.4)] backdrop-blur-2xl transition-all duration-300 focus-within:border-purple-500/50 focus-within:ring-4 focus-within:ring-purple-500/10 hover:border-white/20 ${showInlineComposer ? "" : "pointer-events-auto"}`}>
+                <span className="pointer-events-none absolute left-4 text-zinc-500">
+                  {FEATURES.find((f) => f.id === activeFeature)?.icon || <MagicWandIcon className="h-4 w-4" />}
+                </span>
                 <Input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={getPlaceholder(activeFeature)}
-                  className="h-16 w-full border-0 bg-transparent px-6 pr-20 text-[16px] placeholder:text-zinc-500 focus-visible:ring-0 shadow-none text-zinc-100 rounded-2xl"
+                  className="h-16 w-full border-0 bg-transparent pl-12 pr-20 text-[16px] placeholder:text-zinc-500 focus-visible:ring-0 shadow-none text-zinc-100 rounded-2xl"
                   disabled={loading}
                 />
                 <Button
                   size="icon"
                   className="absolute right-2 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-lg transition-all duration-300 hover:scale-[1.05] hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-[0.95] disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-lg disabled:cursor-not-allowed"
-                  onClick={handleSend}
+                  onClick={() => void handleSend()}
                   disabled={loading}
                 >
                   {loading ? (
@@ -1687,7 +1935,10 @@ function MessageBubble({
   const isUser = message.role === "user";
   const isSystem = message.role === "system";
   const [copied, setCopied] = useState(false);
-  const hiddenMetadataKeys = new Set(["response_id", "user_query"]);
+  const hiddenMetadataKeys = new Set(["response_id", "user_query", "shadow_predictions"]);
+  const shadowPredictions = !isUser && message.feature === "shadow"
+    ? getShadowPredictionsFromMetadata(message.metadata)
+    : [];
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -1696,13 +1947,22 @@ function MessageBubble({
   };
 
   if (isSystem) {
+    const lines = message.content
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const heading = lines[0] ?? "Cogni";
+    const subheading = lines.slice(1).join(" ");
+
     return (
-      <div className="my-10 text-center text-[15px] font-medium text-zinc-500 uppercase tracking-widest flex items-center justify-center gap-4">
-        <span className="h-px w-12 bg-zinc-800" />
-        {message.content.split("\n").map((line, i) => (
-          <span key={i}>{line}</span>
-        ))}
-        <span className="h-px w-12 bg-zinc-800" />
+      <div className="my-8 flex justify-center">
+        <div className="w-full max-w-4xl rounded-2xl border border-white/10 bg-gradient-to-br from-zinc-900/90 via-zinc-900/70 to-indigo-950/40 px-6 py-5 text-center shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-sm">
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-indigo-200">
+            Guided Start
+          </div>
+          <p className="text-lg font-semibold tracking-wide text-zinc-100 md:text-xl">{heading}</p>
+          {subheading && <p className="mt-2 text-sm leading-relaxed text-zinc-300 md:text-base">{subheading}</p>}
+        </div>
       </div>
     );
   }
@@ -1735,11 +1995,38 @@ function MessageBubble({
             </button>
           )}
           <CardContent className="px-6 py-5 text-[15px] sm:text-[16px]">
-          {message.content.split("\n").map((line, i) => (
-            <p key={i} className={`leading-relaxed ${i > 0 ? "mt-4" : ""}`}>
-              {renderRichLine(line, isUser)}
-            </p>
-          ))}
+          {shadowPredictions.length > 0 ? (
+            <div className="space-y-3">
+              {message.content.split("\n").filter(Boolean).map((line, i) => (
+                <p key={i} className={`leading-relaxed ${i > 0 ? "mt-2" : ""}`}>
+                  {renderRichLine(line, isUser)}
+                </p>
+              ))}
+              <div className="space-y-2">
+                {shadowPredictions.map((card, idx) => {
+                  const icon = idx % 2 === 0 ? "⚠️" : "💡";
+                  const hasLeadingEmoji = /^[\u{1F300}-\u{1FAFF}]/u.test(card.title.trim());
+                  return (
+                    <div
+                      key={`${card.title}-${idx}`}
+                      className="rounded-xl border border-amber-300/25 bg-gradient-to-br from-amber-500/10 to-indigo-500/10 p-3 backdrop-blur-sm transition-all hover:-translate-y-0.5 hover:bg-amber-500/15 hover:shadow-[0_8px_24px_rgba(245,158,11,0.12)]"
+                    >
+                      <p className="font-semibold text-amber-200">{hasLeadingEmoji ? card.title : `${icon} ${card.title}`}</p>
+                      <p className="mt-1 text-sm text-zinc-200">{card.description}</p>
+                      <p className="mt-2 text-xs text-zinc-300"><span className="text-zinc-400">Trigger:</span> {card.trigger_condition}</p>
+                      <p className="mt-1 text-xs text-emerald-300"><span className="text-zinc-400">Action:</span> {card.suggested_micro_action}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            message.content.split("\n").map((line, i) => (
+              <p key={i} className={`leading-relaxed ${i > 0 ? "mt-4" : ""}`}>
+                {renderRichLine(line, isUser)}
+              </p>
+            ))
+          )}
           {message.metadata && Object.keys(message.metadata).length > 0 && (
             <div className="mt-5 flex flex-wrap gap-2 text-[11px]">
               {Object.entries(message.metadata)
@@ -1876,18 +2163,31 @@ function formatResponse(
 
     case "socratic": {
       // Handle both initial questions (/ask) and follow-up questions (/reflect)
-      const question = String(data.question || data.follow_up_question || "Let's explore this together. What's the simplest case you can think of?");
+      const rawQuestion = String(data.question || data.follow_up_question || "Let's explore this together. What's the simplest case you can think of?");
+      const question = rawQuestion.trim().endsWith("?") ? rawQuestion.trim() : `${rawQuestion.trim()}?`;
+      const hint = data.hint ? String(data.hint) : undefined;
+      const concept = data.concept ? String(data.concept) : "";
       
-      // If this is a reflection response, include the response analysis
-      let content: string = question;
-      if (data.response_analysis) {
-        content = `**Your response**: _${String(data.user_response)}_\n\n**Analysis**: ${String(data.response_analysis)}\n\n**Next question**: ${question}`;
+      // Keep Socratic output compact and readable.
+      const lines: string[] = [];
+      if (concept) {
+        lines.push(`**Topic**: ${concept}`);
       }
+      if (data.response_analysis) {
+        lines.push(`**Coach Note**: ${String(data.response_analysis)}`);
+      }
+      lines.push(`**Question**: ${question}`);
+      if (hint) {
+        lines.push(`**Hint**: ${hint}`);
+      }
+      const content = lines.join("\n\n");
       
       return {
         content,
         metadata: {
           ...metadata,
+          current_question: question,
+          hint,
           resolved_count: (data.past_history as GenericRecord | undefined)
             ?.resolved_count,
           unresolved_count: (data.past_history as GenericRecord | undefined)
@@ -1898,17 +2198,26 @@ function formatResponse(
     }
 
     case "shadow": {
+      const predictions = Array.isArray(data.predictions)
+        ? (data.predictions as ShadowPredictionCard[])
+        : [];
       const evidence = Array.isArray(data.evidence)
         ? (data.evidence as string[])
         : [];
+      const topicAnalysis = (data.topic_analysis as GenericRecord | undefined) || {};
+      const topicLabel = String(data.current_topic || topicAnalysis.topic || "current topic");
+      const overview = String(data.prediction ?? "No prediction available yet.");
+
       return {
-        content: `**Prediction**: ${String(
-          data.prediction ?? "No prediction available yet."
-        )}\n\n**Evidence**:\n${
+        content: `**Prediction Overview (${topicLabel})**: ${overview}\n\n**Signals Used**:\n${
           evidence.map((e) => `• ${e}`).join("\n") ||
           "Based on your learning patterns"
         }`,
-        metadata,
+        metadata: {
+          ...metadata,
+          shadow_predictions: predictions,
+          prediction_count: predictions.length,
+        },
       };
     }
 
@@ -2143,4 +2452,128 @@ function getPlaceholder(feature: FeatureMode): string {
     graphs: "Graphs view is read-only. Click Refresh Now to update analysis.",
   };
   return placeholders[feature];
+}
+
+function getLatestSocraticQuestion(messages: Message[]): string | null {
+  for (let idx = messages.length - 1; idx >= 0; idx -= 1) {
+    const msg = messages[idx];
+    if (msg.role !== "assistant" || msg.feature !== "socratic") {
+      continue;
+    }
+    const metadata = (msg.metadata || {}) as GenericRecord;
+    const fromMetadata =
+      typeof metadata.current_question === "string" && metadata.current_question.trim().endsWith("?")
+        ? metadata.current_question.trim()
+        : "";
+    if (fromMetadata) {
+      return fromMetadata;
+    }
+
+    const lines = msg.content.split("\n").map((line) => line.trim()).filter(Boolean);
+    const lastQuestionLine = [...lines].reverse().find((line) => line.endsWith("?"));
+    if (lastQuestionLine) {
+      return lastQuestionLine.replace(/^\*\*Next question\*\*:\s*/i, "").trim();
+    }
+  }
+  return null;
+}
+
+function getShadowPredictionsFromMetadata(metadata?: Record<string, unknown>): ShadowPredictionCard[] {
+  if (!metadata) return [];
+  const rows = metadata.shadow_predictions;
+  if (!Array.isArray(rows)) return [];
+
+  const cards: ShadowPredictionCard[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const title = String(item.title || "").trim();
+    const description = String(item.description || "").trim();
+    const triggerCondition = String(item.trigger_condition || "").trim();
+    const action = String(item.suggested_micro_action || "").trim();
+    if (!title || !description || !triggerCondition || !action) continue;
+    cards.push({
+      title,
+      description,
+      trigger_condition: triggerCondition,
+      suggested_micro_action: action,
+      difficulty: String(item.difficulty || "Medium"),
+      confidence: typeof item.confidence === "number" ? item.confidence : undefined,
+    });
+  }
+  return cards;
+}
+
+function getGuidedFlow(
+  activeFeature: FeatureMode,
+  context: { topic?: string; confusion?: number; errorPattern?: string },
+  messages: Message[],
+  quizQuestionCount: number,
+): { title: string; helper: string; step1: string; step2: string } | null {
+  const hasTopic = !!context.topic?.trim();
+  const hasUserInput = messages.some((m) => m.role === "user" && m.feature === activeFeature);
+
+  if (activeFeature === "archaeology") {
+    return {
+      title: "⬇️ Now describe your confusion below",
+      helper: "Add a concrete confusion statement so archaeology can retrieve similar past moments.",
+      step1: hasTopic ? "Enter topic ✅" : "Enter topic",
+      step2: hasUserInput ? "Describe confusion ✅" : "Describe confusion ⬇️",
+    };
+  }
+
+  if (activeFeature === "socratic") {
+    return {
+      title: "⬇️ Answer the question below",
+      helper: "Give a short belief or answer; Socratic follow-up will adapt using your memory patterns.",
+      step1: hasTopic ? "Enter topic ✅" : "Enter topic",
+      step2: hasUserInput ? "Answer question ✅" : "Answer question ⬇️",
+    };
+  }
+
+  if (activeFeature === "shadow") {
+    return {
+      title: "⬇️ Click to predict challenges",
+      helper: "Set your topic, then use the prediction button to anticipate upcoming struggles.",
+      step1: hasTopic ? "Enter topic ✅" : "Enter topic",
+      step2: hasUserInput ? "Predict challenges ✅" : "Predict challenges ⬇️",
+    };
+  }
+
+  if (activeFeature === "memory") {
+    return {
+      title: "⬇️ Build your memory profile",
+      helper: "Generate summary or quiz to enrich memory signals and track metacognitive growth.",
+      step1: quizQuestionCount > 0 ? "Generate quiz ✅" : "Generate quiz",
+      step2: "Submit answers ⬇️",
+    };
+  }
+
+  if (activeFeature === "resonance") {
+    return {
+      title: "⬇️ Explore hidden concept links",
+      helper: "Enter a topic and click show hidden connections to uncover adjacent ideas.",
+      step1: hasTopic ? "Enter topic ✅" : "Enter topic",
+      step2: "Find connections ⬇️",
+    };
+  }
+
+  if (activeFeature === "contagion") {
+    return {
+      title: "⬇️ Learn from peer patterns",
+      helper: "Enter a topic and generate a roadmap from community-level successful strategies.",
+      step1: hasTopic ? "Enter topic ✅" : "Enter topic",
+      step2: "Generate roadmap ⬇️",
+    };
+  }
+
+  if (activeFeature === "graphs") {
+    return {
+      title: "⬇️ Refresh your dashboard",
+      helper: "Use refresh to update your progress, weak areas, and concept mastery visuals.",
+      step1: "Open graph view ✅",
+      step2: "Refresh metrics ⬇️",
+    };
+  }
+ return null;
 }
