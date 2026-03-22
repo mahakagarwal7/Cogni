@@ -9,6 +9,7 @@ from app.services.llm_service import llm_service
 from app.services.prompt_template_service import prompt_template_service
 from app.models.memory_types import Misconception
 from typing import Dict, Any, List
+import re
 
 class SocraticEngine:
     """
@@ -51,25 +52,185 @@ class SocraticEngine:
         # If belief is vague, ask about their existing knowledge instead
         if self._is_vague_belief(user_belief):
             if confusion_level >= 5:
-                return f"Can you describe one thing you DO know about {concept}?"
+                return f"Can you give one real-life example where {concept} appears?"
             if confusion_level == 4:
-                return f"What comes to mind first when you think of {concept}?"
+                return f"What is one concrete sign that {concept} is happening?"
             if confusion_level == 3:
                 return f"What have you heard or seen about {concept} before?"
             if confusion_level == 2:
-                return f"What properties or characteristics does {concept} have?"
-            return f"What would you need to understand about {concept} before you could solve a problem with it?"
+                return f"How would you test whether your idea about {concept} works?"
+            return f"What edge case would break your current understanding of {concept}?"
         
         # Normal fallback for specific beliefs
         if confusion_level >= 5:
-            return f"What simple real-life example of {concept} makes '{user_belief}' seem true?"
+            return f"What simple real-life example of {concept} makes '{user_belief}' seem true at first?"
         if confusion_level == 4:
             return f"Why does '{user_belief}' about {concept} seem correct at first?"
         if confusion_level == 3:
-            return f"What assumption about {concept} makes '{user_belief}' seem true?"
+            return f"In {concept}, what concrete example challenges your belief: '{user_belief}'?"
         if confusion_level == 2:
-            return f"How could '{user_belief}' about {concept} fail in a specific case?"
-        return f"What exception or edge case would disprove '{user_belief}'?"
+            return f"How could '{user_belief}' about {concept} fail under changed assumptions?"
+        return f"What exception or edge case in {concept} would disprove '{user_belief}'?"
+
+    def _matches_confusion_style(self, question: str, confusion_level: int) -> bool:
+        """Ensure opener style matches learner state to avoid vague or mis-leveled prompts."""
+        q = (question or "").strip().lower()
+        if confusion_level >= 4:
+            return q.startswith(("what", "can you"))
+        if confusion_level <= 2:
+            return q.startswith(("how", "why", "what if", "what exception"))
+        return q.startswith(("what", "how", "why", "can you"))
+
+    def _infer_question_type(self, user_belief: str, confusion_level: int) -> str:
+        """Classify the Socratic move to keep questions targeted and non-vague."""
+        if self._is_vague_belief(user_belief):
+            return "diagnostic"
+        if confusion_level >= 4:
+            return "foundational_check"
+        if confusion_level <= 2:
+            return "counterexample"
+        return "assumption_probe"
+
+    def _contains_concept_anchor(self, question: str, concept: str) -> bool:
+        q_lower = question.lower()
+        concept_tokens = [tok for tok in re.split(r"\W+", concept.lower()) if len(tok) >= 4]
+        if concept.lower() in q_lower:
+            return True
+        return any(tok in q_lower for tok in concept_tokens)
+
+    def _score_question_quality(self, question: str, concept: str, question_type: str) -> Dict[str, Any]:
+        """Simple deterministic quality gate to reject vague Socratic prompts."""
+        score = 0
+        issues: List[str] = []
+        q = question.strip()
+        q_lower = q.lower()
+
+        if q.endswith("?"):
+            score += 1
+        else:
+            issues.append("missing_question_mark")
+
+        if len(q.split()) <= 22:
+            score += 1
+        else:
+            issues.append("too_long")
+
+        if self._contains_concept_anchor(q, concept):
+            score += 1
+        else:
+            issues.append("missing_concept_anchor")
+
+        if q_lower.startswith(("what", "how", "why", "can you")):
+            score += 1
+        else:
+            issues.append("weak_opening")
+
+        vague_markers = [
+            "keep practicing",
+            "alternative approach",
+            "improve understanding",
+            "foundational concepts",
+        ]
+        if any(marker in q_lower for marker in vague_markers):
+            issues.append("generic_phrase_detected")
+        else:
+            score += 1
+
+        # Diagnostic and counterexample prompts should be concrete and scoped.
+        if question_type in {"diagnostic", "counterexample"} and len(q.split()) >= 7:
+            score += 1
+        elif question_type in {"diagnostic", "counterexample"}:
+            issues.append("not_specific_enough")
+
+        return {
+            "score": score,
+            "max_score": 6,
+            "quality": "high" if score >= 5 else "medium" if score >= 4 else "low",
+            "issues": issues,
+        }
+
+    def _build_question_metadata(self, concept: str, question_type: str) -> Dict[str, str]:
+        """Explain why this question is asked and how next turn should branch."""
+        if question_type == "diagnostic":
+            return {
+                "why_this_question": f"Establish baseline understanding of {concept} before deeper probing.",
+                "expected_signal": "Student names at least one concrete property/example.",
+                "next_if_correct": "Move to assumption probe with a specific scenario.",
+                "next_if_incorrect": "Introduce one concrete example then re-ask with simpler language.",
+            }
+        if question_type == "counterexample":
+            return {
+                "why_this_question": f"Stress-test the belief using an edge case in {concept}.",
+                "expected_signal": "Student can identify a failure case for the belief.",
+                "next_if_correct": "Ask transfer question to apply corrected reasoning.",
+                "next_if_incorrect": "Provide guided counterexample and ask what changed.",
+            }
+        if question_type == "foundational_check":
+            return {
+                "why_this_question": f"Rebuild fundamentals in {concept} with low cognitive load.",
+                "expected_signal": "Student explains one core idea in plain language.",
+                "next_if_correct": "Increase depth with one causal 'how' question.",
+                "next_if_incorrect": "Switch to concrete example before another check.",
+            }
+        return {
+            "why_this_question": f"Probe the hidden assumption behind the current belief on {concept}.",
+            "expected_signal": "Student identifies explicit assumption in their reasoning.",
+            "next_if_correct": "Challenge with edge case to verify robustness.",
+            "next_if_incorrect": "Reframe assumption using simpler, concrete wording.",
+        }
+
+    def _is_generic_socratic_question(self, question: str) -> bool:
+        q = (question or "").strip().lower()
+        generic_patterns = [
+            "can you think of a simpler case",
+            "alternative approach",
+            "what do you think",
+            "can you explain more",
+            "tell me more",
+            "what is your understanding",
+            "how do you feel",
+            "let's explore",
+        ]
+        return any(pattern in q for pattern in generic_patterns)
+
+    def _enforce_specific_question(
+        self,
+        question: str,
+        concept: str,
+        confusion_level: int,
+        user_belief: str,
+        question_type: str,
+    ) -> str:
+        """Final guardrail to ensure the question is concrete, short, and concept-anchored."""
+        q = (question or "").strip().strip('"\'')
+        if not q:
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        if not q.endswith("?"):
+            q = f"{q}?"
+
+        if self._is_generic_socratic_question(q):
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        if len(q.split()) < 6 or len(q.split()) > 24:
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        if not self._matches_confusion_style(q, confusion_level):
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        if not self._contains_concept_anchor(q, concept):
+            # Attempt a non-breaking repair before fallback.
+            repaired = re.sub(r"\?+$", "", q).strip()
+            repaired = f"{repaired} in {concept}?"
+            if self._contains_concept_anchor(repaired, concept) and 6 <= len(repaired.split()) <= 24:
+                return repaired
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        quality = self._score_question_quality(q, concept, question_type)
+        if quality["quality"] == "low":
+            return self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        return q
     
     async def _retain_interaction(self, content: str, user_id: str, topic: str, engine_feature: str, interaction_data: Dict[str, Any]) -> None:
         """
@@ -126,6 +287,7 @@ class SocraticEngine:
         
         # Check if belief is too vague - handle specially
         is_vague = self._is_vague_belief(user_belief)
+        question_type = self._infer_question_type(user_belief, confusion_level)
         
         # PHASE 9: Generate killer prompt with adaptive rules
         style_instruction = self._get_socratic_style(confusion_level)
@@ -292,8 +454,24 @@ Rules:
 
         # If model keeps returning the same generic medium-level pattern,
         # rewrite it to the requested difficulty level.
-        if confusion_level != 3 and question.lower().startswith("what assumption about"):
+        if question.lower().startswith("what assumption about"):
             question = self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        question = self._enforce_specific_question(
+            question=question,
+            concept=concept,
+            confusion_level=confusion_level,
+            user_belief=user_belief,
+            question_type=question_type,
+        )
+
+        quality = self._score_question_quality(question, concept, question_type)
+        if quality["quality"] == "low":
+            # Deterministic rescue path for low-quality or generic outputs.
+            question = self._build_level_fallback_question(concept, user_belief, confusion_level)
+            quality = self._score_question_quality(question, concept, question_type)
+
+        question_meta = self._build_question_metadata(concept, question_type)
 
         print(f"[DEBUG] Final question: {repr(question)}")
         
@@ -308,6 +486,12 @@ Rules:
             "user_belief": user_belief,
             "confusion_level": confusion_level,
             "question": question,
+            "question_type": question_type,
+            "why_this_question": question_meta["why_this_question"],
+            "expected_signal": question_meta["expected_signal"],
+            "next_if_correct": question_meta["next_if_correct"],
+            "next_if_incorrect": question_meta["next_if_incorrect"],
+            "question_quality": quality,
             "confidence": self._get_default_confidence(),
             "past_history": history,
             "demo_mode": not self.llm.available  # ONLY demo if LLM itself is unavailable
@@ -417,6 +601,16 @@ Format: {{"question": "Your follow-up question here?"}}"""
         if not follow_up_question:
             # Fallback: generate question based on response type
             follow_up_question = self._build_followup_from_response(concept, user_response, confusion_level)
+
+        response_type = self._classify_response(user_response)
+        follow_up_type = "diagnostic" if response_type in {"no_knowledge", "vague_response"} else "assumption_probe"
+        follow_up_question = self._enforce_specific_question(
+            question=follow_up_question,
+            concept=concept,
+            confusion_level=confusion_level,
+            user_belief=user_response,
+            question_type=follow_up_type,
+        )
         
         from uuid import uuid4
         response_id = str(uuid4())
@@ -433,7 +627,6 @@ Format: {{"question": "Your follow-up question here?"}}"""
             "demo_mode": not self.llm.available  # ONLY demo if LLM itself is unavailable, not based on history
         }
 
-        response_type = self._classify_response(user_response)
         outcome = "resolved" if response_type in {"has_knowledge", "detailed_response"} else "unresolved"
         await self._retain_interaction(
             content=(

@@ -1,4 +1,4 @@
-# backend/app/models/memory_types.py
+
 from pydantic import BaseModel, Field
 from typing import Literal, Optional, List
 from datetime import datetime

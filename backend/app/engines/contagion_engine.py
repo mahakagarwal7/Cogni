@@ -419,20 +419,15 @@ Success: [0.75-0.95]"""
         topic: str,
         peer_strategies: str,
         personal_context: Dict[str, Any],
-        memory_context: str = "",
-        personal_strategies: List[Dict[str, Any]] = None
+        memory_context: str = ""
     ) -> str:
         """
         UPGRADE: Generate a mentor-guided learning plan for the topic using LLM.
         
-        Incorporates personal successful strategies and peer patterns.
         Returns a clean, readable roadmap with 4-6 steps.
         Each step explains WHAT to do and WHY.
         No percentages, bullet symbols, or meta explanations.
         """
-        if personal_strategies is None:
-            personal_strategies = []
-        
         if not self.llm.available:
             # Safe fallback
             return f"Start learning {topic} by breaking it into smaller concepts and practicing step-by-step."
@@ -440,25 +435,20 @@ Success: [0.75-0.95]"""
         # Build context
         learning_style = personal_context.get("learning_style", "adaptive")
         peer_benefit = f" What helped others: {peer_strategies}." if peer_strategies else ""
-        personal_benefit = ""
-        
-        if personal_strategies:
-            personal_strats_text = "; ".join([
-                s.get("strategy", "")[:60] for s in personal_strategies[:3]
-            ])
-            personal_benefit = f" What's worked for you before: {personal_strats_text}."
         
         prompt = f"""User history:
     {memory_context}
 
     Current question:
-    Create a personalized learning roadmap for {topic}.
+    Create a learning roadmap for {topic}.
 
-    You are a mentor creating a learning plan tailored to THIS STUDENT.
+    Instruction:
+    Adapt explanation based on user's past struggles.
+
+    You are a mentor creating a personalized learning roadmap.
 
 Topic: {topic}
 Student's learning style: {learning_style}
-{personal_benefit}
 {peer_benefit}
 
 Create a structured learning plan for {topic}.
@@ -470,10 +460,9 @@ CRITICAL REQUIREMENTS:
 - NO percentage signs or numbers like "70%"
 - NO meta explanations like "let me explain" or "here's why"
 - NO thinking steps or brackets like <think>
-- NO truncation - complete thoughtsonly
+- NO truncation - complete thoughts only
 - Mentor-like, encouraging, practical tone
 - Focus on understanding and mastery
-- Incorporate what's worked for this student before when relevant
 
 Format: Just the plan text, nothing else."""
 

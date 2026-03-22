@@ -1688,6 +1688,10 @@ function MessageBubble({
   const isSystem = message.role === "system";
   const [copied, setCopied] = useState(false);
   const hiddenMetadataKeys = new Set(["response_id", "user_query"]);
+  const structuredFeature = message.feature === "socratic" || message.feature === "shadow";
+  const structuredBlocks = !isUser && structuredFeature
+    ? parseStructuredAssistantBlocks(message.content)
+    : [];
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -1735,11 +1739,31 @@ function MessageBubble({
             </button>
           )}
           <CardContent className="px-6 py-5 text-[15px] sm:text-[16px]">
-          {message.content.split("\n").map((line, i) => (
-            <p key={i} className={`leading-relaxed ${i > 0 ? "mt-4" : ""}`}>
-              {renderRichLine(line, isUser)}
-            </p>
-          ))}
+          {structuredBlocks.length > 0 ? (
+            <div className="space-y-3">
+              {structuredBlocks.map((block, idx) => (
+                <div
+                  key={`${block.title}-${idx}`}
+                  className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3"
+                >
+                  <p className="text-xs font-semibold uppercase tracking-wider text-purple-300">
+                    {block.title}
+                  </p>
+                  {block.body.split("\n").map((line, lineIdx) => (
+                    <p key={lineIdx} className={`leading-relaxed ${lineIdx > 0 ? "mt-2" : "mt-1"}`}>
+                      {renderRichLine(line, isUser)}
+                    </p>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ) : (
+            message.content.split("\n").map((line, i) => (
+              <p key={i} className={`leading-relaxed ${i > 0 ? "mt-4" : ""}`}>
+                {renderRichLine(line, isUser)}
+              </p>
+            ))
+          )}
           {message.metadata && Object.keys(message.metadata).length > 0 && (
             <div className="mt-5 flex flex-wrap gap-2 text-[11px]">
               {Object.entries(message.metadata)
@@ -1747,7 +1771,10 @@ function MessageBubble({
                 .map(([key, value]) => (
                   <div
                     key={key}
-                    className="flex items-center gap-1.5 rounded-md bg-white/5 border border-white/5 px-2.5 py-1 text-zinc-400 font-medium"
+                    className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-medium ${getMetadataBadgeClasses(
+                      key,
+                      value
+                    )}`}
                   >
                     <span className="font-semibold capitalize">
                       {key.replace(/_/g, " ")}:
@@ -1877,11 +1904,47 @@ function formatResponse(
     case "socratic": {
       // Handle both initial questions (/ask) and follow-up questions (/reflect)
       const question = String(data.question || data.follow_up_question || "Let's explore this together. What's the simplest case you can think of?");
+      const questionType = String(data.question_type || "").trim();
+      const whyThisQuestion = String(data.why_this_question || "").trim();
+      const expectedSignal = String(data.expected_signal || "").trim();
+      const nextIfCorrect = String(data.next_if_correct || "").trim();
+      const nextIfIncorrect = String(data.next_if_incorrect || "").trim();
+      const quality = (data.question_quality as GenericRecord | undefined) || {};
+      const qualityLabel = String(quality.quality || "").trim();
+      const qualityScore = Number(quality.score ?? NaN);
+      const qualityMax = Number(quality.max_score ?? NaN);
       
       // If this is a reflection response, include the response analysis
       let content: string = question;
       if (data.response_analysis) {
         content = `**Your response**: _${String(data.user_response)}_\n\n**Analysis**: ${String(data.response_analysis)}\n\n**Next question**: ${question}`;
+      }
+
+      if (!data.response_analysis) {
+        const detailBlocks: string[] = [];
+        detailBlocks.push(`**Socratic Question**: ${question}`);
+        if (questionType) {
+          detailBlocks.push(`**Question Type**: ${questionType.replace(/_/g, " ")}`);
+        }
+        if (whyThisQuestion) {
+          detailBlocks.push(`**Why This Question**: ${whyThisQuestion}`);
+        }
+        if (expectedSignal) {
+          detailBlocks.push(`**What Cogni Is Looking For**: ${expectedSignal}`);
+        }
+        if (nextIfCorrect || nextIfIncorrect) {
+          detailBlocks.push(
+            `**Next-Step Logic**:\n• If correct: ${nextIfCorrect || "Proceed to deeper probe."}\n• If incorrect: ${nextIfIncorrect || "Switch to simpler scaffold."}`
+          );
+        }
+        if (qualityLabel || Number.isFinite(qualityScore)) {
+          const scoreText = Number.isFinite(qualityScore) && Number.isFinite(qualityMax)
+            ? `${Math.round(qualityScore)}/${Math.round(qualityMax)}`
+            : "N/A";
+          detailBlocks.push(`**Question Quality**: ${qualityLabel || "unknown"} (${scoreText})`);
+        }
+
+        content = detailBlocks.join("\n\n");
       }
       
       return {
@@ -1893,6 +1956,8 @@ function formatResponse(
           unresolved_count: (data.past_history as GenericRecord | undefined)
             ?.unresolved_count,
           is_follow_up: !!data.follow_up_question,
+          question_type: questionType || undefined,
+          question_quality: qualityLabel || undefined,
         },
       };
     }
@@ -1901,14 +1966,59 @@ function formatResponse(
       const evidence = Array.isArray(data.evidence)
         ? (data.evidence as string[])
         : [];
-      return {
-        content: `**Prediction**: ${String(
-          data.prediction ?? "No prediction available yet."
-        )}\n\n**Evidence**:\n${
+      const shadowTopicHint = String(
+        data.current_topic ||
+          (Array.isArray(data.recent_topics) ? data.recent_topics[0] : "") ||
+          ""
+      );
+      const cleanPrediction = sanitizeShadowPredictionText(
+        String(data.prediction ?? "No prediction available yet."),
+        shadowTopicHint
+      );
+      const predictedFailure = String(data.predicted_failure ?? "").trim();
+      const triggerContext = String(data.trigger_context ?? "").trim();
+      const preventionAction = String(data.prevention_action ?? "").trim();
+      const confidenceReason = String(data.confidence_reason ?? "").trim();
+      const confidenceBand = String(data.confidence_band ?? "").trim();
+      const intervention = (data.intervention as GenericRecord | undefined) || {};
+      const immediateExercise = String(intervention.immediate_exercise ?? "").trim();
+      const warningSign = String(intervention.warning_sign ?? "").trim();
+      const microCheck = String(intervention.micro_check_question ?? "").trim();
+
+      const contentSections: string[] = [];
+      contentSections.push(`**Prediction**: ${cleanPrediction}`);
+
+      if (predictedFailure) {
+        contentSections.push(`**Likely Next Failure**: ${predictedFailure}`);
+      }
+      if (triggerContext) {
+        contentSections.push(`**When This Usually Happens**: ${triggerContext}`);
+      }
+      if (preventionAction) {
+        contentSections.push(`**Prevention Action**: ${preventionAction}`);
+      }
+      if (immediateExercise || warningSign || microCheck) {
+        contentSections.push(
+          `**Intervention Plan**:\n• Immediate exercise: ${immediateExercise || "N/A"}\n• Warning sign: ${warningSign || "N/A"}\n• Micro-check: ${microCheck || "N/A"}`
+        );
+      }
+
+      contentSections.push(
+        `**Evidence**:\n${
           evidence.map((e) => `• ${e}`).join("\n") ||
-          "Based on your learning patterns"
-        }`,
-        metadata,
+          "• Based on your recent learning patterns"
+        }`
+      );
+      if (confidenceReason) {
+        contentSections.push(`**Why This Prediction**: ${confidenceReason}`);
+      }
+
+      return {
+        content: contentSections.join("\n\n"),
+        metadata: {
+          ...metadata,
+          confidence_band: confidenceBand || undefined,
+        },
       };
     }
 
@@ -2143,4 +2253,109 @@ function getPlaceholder(feature: FeatureMode): string {
     graphs: "Graphs view is read-only. Click Refresh Now to update analysis.",
   };
   return placeholders[feature];
+}
+
+function parseStructuredAssistantBlocks(content: string): Array<{ title: string; body: string }> {
+  const chunks = content
+    .split("\n\n")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const blocks: Array<{ title: string; body: string }> = [];
+
+  for (const chunk of chunks) {
+    const lines = chunk.split("\n");
+    const first = lines[0] || "";
+    const match = first.match(/^\*\*(.+?)\*\*:\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const title = match[1].trim();
+    const inline = (match[2] || "").trim();
+    const bodyLines = [inline, ...lines.slice(1)].filter((line) => line.trim().length > 0);
+    blocks.push({ title, body: bodyLines.join("\n") });
+  }
+
+  return blocks;
+}
+
+function getMetadataBadgeClasses(key: string, value: unknown): string {
+  const base = "text-zinc-300 border-white/10 bg-white/5";
+  const val = String(value).toLowerCase();
+
+  if (key === "question_quality") {
+    if (val.includes("high")) {
+      return "text-emerald-200 border-emerald-400/30 bg-emerald-500/15";
+    }
+    if (val.includes("medium")) {
+      return "text-amber-200 border-amber-400/30 bg-amber-500/15";
+    }
+    return "text-rose-200 border-rose-400/30 bg-rose-500/15";
+  }
+
+  if (key === "confidence_band") {
+    if (val.includes("high")) {
+      return "text-cyan-200 border-cyan-400/30 bg-cyan-500/15";
+    }
+    if (val.includes("medium")) {
+      return "text-indigo-200 border-indigo-400/30 bg-indigo-500/15";
+    }
+    return "text-fuchsia-200 border-fuchsia-400/30 bg-fuchsia-500/15";
+  }
+
+  if (key === "question_type") {
+    return "text-purple-200 border-purple-400/30 bg-purple-500/15";
+  }
+
+  return base;
+}
+
+function sanitizeShadowPredictionText(prediction: string, topicHint?: string): string {
+  const raw = String(prediction || "").trim();
+  if (!raw) {
+    return "No prediction available yet.";
+  }
+
+  const compact = raw
+    .replace(/^#+\s*/gm, "")
+    .replace(/^\*+\s*/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const lowSignalMarkers = [
+    "there is no information",
+    "as stated in the search results",
+    "does not explicitly list",
+    "insufficient data",
+  ];
+  const topic = String(topicHint || "").trim().toLowerCase();
+
+  if (lowSignalMarkers.some((marker) => compact.toLowerCase().includes(marker))) {
+    return topic
+      ? `You may struggle with applying core ideas in ${topic}; review one worked example before independent solving.`
+      : "You may struggle with applying core ideas; review one worked example before independent solving.";
+  }
+
+  const sentences = compact.split(/(?<=[.!?])\s+/).filter(Boolean);
+
+  if (topic) {
+    const topical = sentences.find((s) => s.toLowerCase().includes(topic) && s.split(" ").length <= 26);
+    if (topical) {
+      return topical;
+    }
+  }
+
+  const concise = sentences.find((s) => s.split(" ").length <= 22);
+  if (concise) {
+    return topic && !concise.toLowerCase().includes(topic)
+      ? `You may struggle with applying core ideas in ${topic}; review one worked example before independent solving.`
+      : concise;
+  }
+
+  const clipped = compact.split(" ").slice(0, 22).join(" ").replace(/[.,;:]+$/, "");
+  if (topic && !clipped.toLowerCase().includes(topic)) {
+    return `You may struggle with applying core ideas in ${topic}; review one worked example before independent solving.`;
+  }
+  return `${clipped}.`;
 }

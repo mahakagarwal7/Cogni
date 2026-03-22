@@ -1,4 +1,4 @@
-# backend/app/services/hindsight_service.py
+
 """
 🧠 Cogni - Hindsight Memory Service
 Unified interface for all memory operations with real API + demo fallback.
@@ -14,12 +14,11 @@ from dotenv import load_dotenv
 from datetime import datetime
 from pathlib import Path
 
-# CRITICAL: Load environment variables BEFORE any client initialization.
-# Use backend-root relative path to avoid cwd-dependent fallback behavior.
+
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(BACKEND_ROOT / ".env")
 
-# Import local fallback for when Hindsight API is unavailable
+
 from app.services.local_memory_fallback import local_memory
 
 
@@ -52,13 +51,13 @@ class _HindsightClient:
         """Retain a memory in the bank."""
         url = f'{self.base_url}/v1/default/banks/{bank_id}/memories'
         
-        # Convert all metadata values to strings (Hindsight API requirement)
+       
         def stringify_metadata(meta: Dict) -> Dict:
             if not meta:
                 return {}
             return {k: str(v) for k, v in meta.items()}
         
-        # Build single memory item
+      
         memory_item = {
             'content': content,
             'metadata': stringify_metadata(metadata)
@@ -68,7 +67,7 @@ class _HindsightClient:
         if timestamp:
             memory_item['timestamp'] = timestamp.isoformat()
         
-        # Wrap in items array as required by Hindsight API
+        
         payload = {
             'items': [memory_item]
         }
@@ -130,13 +129,13 @@ class HindsightService:
     """
     
     def __init__(self):
-        # Load and CLEAN all environment values aggressively
+       
         raw_key = os.getenv("HINDSIGHT_API_KEY")
         raw_url = os.getenv("HINDSIGHT_BASE_URL")
         raw_global = os.getenv("HINDSIGHT_GLOBAL_BANK")
         raw_user_bank_prefix = os.getenv("HINDSIGHT_USER_BANK_PREFIX")
         
-        # DEBUG: Print RAW values with repr() to reveal hidden characters
+       
         print("\n" + "="*70)
         print("[DEBUG] HindsightService - RAW ENV LOADING DEBUG")
         print(f"   raw_key repr: {repr(raw_key)}")
@@ -145,15 +144,14 @@ class HindsightService:
         print(f"   raw_global repr: {repr(raw_global)}")
         print("="*70 + "\n")
         
-        # Clean values: strip whitespace, handle None defaults
+       
         self.api_key = (raw_key or "").strip()
         self.base_url = (raw_url or "https://api.hindsight.vectorize.io").strip().rstrip('/')
-        # Backward-compatible default keeps existing bank naming stable if env var is removed.
+   
         self.user_bank_prefix = (raw_user_bank_prefix or "student_demo_001").strip()
         self.bank_id = self.user_bank_prefix
         self.global_bank = (raw_global or "global_wisdom_public").strip()
-        
-        # DEBUG: Print CLEANED values
+      
         print("\n" + "="*70)
         print("[DEBUG] HindsightService - CLEANED VALUES")
         print(f"   api_key: {'[SET]' if self.api_key else '[MISSING]'} ({len(self.api_key)} chars)")
@@ -165,7 +163,7 @@ class HindsightService:
         print(f"   -> api_available: {bool(self.api_key and self.base_url)}")
         print("="*70 + "\n")
         
-        # Safety check: disable API if obvious typo detected
+        
         if "hhindsight" in self.base_url.lower():
             print("[FATAL] Typo 'hhindsight' detected in base_url! Disabling API.")
             print("   -> Fix: Change 'hhindsight' to 'hindsight' in .env or code")
@@ -173,7 +171,7 @@ class HindsightService:
             self.client = None
         else:
             self.api_available = bool(self.api_key and self.base_url)
-            # Initialize httpx-based client with correct Hindsight API endpoints
+           
             if self.api_available:
                 try:
                     self.client = _HindsightClient(api_key=self.api_key, base_url=self.base_url)
@@ -203,8 +201,7 @@ class HindsightService:
         if not user_id:
             return [self.bank_id]
         user_bank = self._user_bank_id(user_id)
-        # Strict isolation: never mix shared-bank memories into per-user reasoning paths.
-        # This avoids unrelated historical data contaminating progress, killer prompts, and shadow signals.
+        
         return [user_bank]
 
     def _extract_reflect_insight(self, payload: Any) -> str:
@@ -239,7 +236,7 @@ class HindsightService:
                     if text:
                         return text
 
-            # If no preferred key exists, inspect nested values.
+          
             for value in payload.values():
                 text = self._extract_reflect_insight(value)
                 if text:
@@ -258,8 +255,50 @@ class HindsightService:
             "don't have enough information",
             "unable to determine",
             "insufficient information",
+            "retrieved data",
+            "does not explicitly state",
+            "does not explicitly list",
+            "next steps after",
         ]
         return any(marker in lower for marker in low_signal_markers)
+
+    def _is_actionable_reflect(self, text: str) -> bool:
+        """Keep only reflective summaries that provide predictive signal, not generic narration."""
+        if not text:
+            return False
+        lower = text.lower().strip()
+        generic_markers = [
+            "has recently experienced confusion",
+            "strategy was also suggested",
+            "was suggested for this area",
+            "student has recently",
+        ]
+        if any(marker in lower for marker in generic_markers):
+            return False
+
+        predictive_markers = ["likely", "may", "risk", "challenge", "struggle", "when"]
+        return any(marker in lower for marker in predictive_markers)
+
+    def _normalize_topic_text(self, topic: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9\s-]", " ", str(topic or "").lower())
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+    def _is_topic_relevant(self, candidate_topic: str, reference_topic: str) -> bool:
+        c = self._normalize_topic_text(candidate_topic)
+        r = self._normalize_topic_text(reference_topic)
+        if not c or not r:
+            return False
+        if c in r or r in c:
+            return True
+
+        stop_words = {"the", "and", "for", "with", "from", "into", "over", "under", "general", "basics", "intro"}
+        c_tokens = {t for t in c.split(" ") if len(t) > 2 and t not in stop_words}
+        r_tokens = {t for t in r.split(" ") if len(t) > 2 and t not in stop_words}
+        if not c_tokens or not r_tokens:
+            return False
+        overlap = c_tokens.intersection(r_tokens)
+        return len(overlap) >= 1
     
    
     
@@ -283,7 +322,7 @@ class HindsightService:
                     print(f"[WARNING] Hindsight API failed for bank={bank}: {str(e)}")
                     continue
         
-        # Fallback: Save to local storage
+       
         print(f"[INFO] Falling back to local storage for session retention")
         local_result = local_memory.save_interaction(self._user_bank_id(user_id), content, context)
         return {
@@ -314,7 +353,7 @@ class HindsightService:
                     print(f"[WARNING] Hindsight API failed for bank={bank}: {str(e)}")
                     continue
         
-        # Fallback: Save to local storage
+        
         print(f"[INFO] Falling back to local storage for misconception retention")
         local_result = local_memory.save_interaction(self._user_bank_id(user_id), content, context)
         return {
@@ -436,8 +475,7 @@ class HindsightService:
                     print(f"[SUCCESS] get_user_insights: user_id={user_id}, count={len(insights)}")
                     return insights
 
-                # No first-class insight records found. Fall through to user-memory-derived insights
-                # so topic-level progress remains meaningful instead of always looking identical.
+               
                 print(f"[INFO] No explicit insight records for user={user_id}; deriving from user memories")
 
                 derived_insights: List[Dict[str, Any]] = []
@@ -480,7 +518,7 @@ class HindsightService:
                                 match = re.search(pattern, content_text, flags=re.IGNORECASE)
                                 if match:
                                     candidate = match.group(1).strip()
-                                    # Keep only concise noun-phrase-like topics.
+                                   
                                     if 1 <= len(candidate.split()) <= 5:
                                         topic_val = candidate
                                         break
@@ -529,7 +567,7 @@ class HindsightService:
             except Exception as e:
                 print(f"[WARNING] Hindsight get_user_insights error: {str(e)}")
         
-        # Fallback 1: Check local storage for user insights
+       
         print(f"[INFO] Checking local storage for user insights: {user_id}")
         local_memories = local_memory.get_user_memories(self._user_bank_id(user_id), user_id, limit=50)
         
@@ -563,7 +601,7 @@ class HindsightService:
             print(f"[SUCCESS] get_user_insights from local storage: user_id={user_id}, count={len(insights)}")
             return insights
         
-        # Fallback 2: No memories anywhere - return generic insight WITHOUT demo_mode flag
+       
         print(f"[INFO] No insights found for {user_id} - returning generic insight")
         return [
             {
@@ -588,7 +626,7 @@ class HindsightService:
         try:
             query = f"confusion about {topic} with level {confusion_level} or higher"
 
-            # Backbone synthesis: let Hindsight reflect patterns across sessions.
+          
             reflect_query = (
                 "What topics does this student consistently struggle with and what comes next? "
                 f"Focus on topic: {topic}."
@@ -610,7 +648,7 @@ class HindsightService:
                 except Exception as e:
                     print(f"[WARNING] archaeology reflect failed for bank={bank}: {str(e)}")
             
-            # Directly await the async client method (no need for executor)
+          
             memories: List[Dict[str, Any]] = []
             for bank in self._bank_candidates(user_id):
                 try:
@@ -625,7 +663,7 @@ class HindsightService:
             
             print(f"[SUCCESS] recall_temporal_archaeology: Got {len(memories)} results")
             
-            # Parse API response - safely handle None values
+           
             helpful = []
             for m in memories[:3]:
                 if not isinstance(m, dict):
@@ -669,7 +707,7 @@ class HindsightService:
                 
                 print(f"[SUCCESS] recall_socratic_history: Got {len(memories)} results from Hindsight API")
                 
-                # Safely filter resolved/unresolved - handle None values
+              
                 resolved = []
                 unresolved = []
                 for m in memories:
@@ -694,7 +732,7 @@ class HindsightService:
             except Exception as e:
                 print(f"[WARNING] Hindsight API recall failed: {str(e)}")
         
-        # Fallback: Check local storage
+      
         print(f"[INFO] Checking local storage for concept: {concept}")
         local_memories = local_memory.get_topic_memories(self._user_bank_id(user_id), concept, limit=10)
         
@@ -711,7 +749,7 @@ class HindsightService:
                 "source": "local_storage"
             }
         
-        # No memories found anywhere - return demo response
+        
         return self._get_demo_socratic_response(concept)
     
     async def recall_all_memories(self, limit: int = 10, user_id: Optional[str] = None) -> List[Dict]:
@@ -817,7 +855,7 @@ class HindsightService:
             except Exception as e:
                 print(f"[WARNING] Hindsight recall error: {str(e)}")
 
-        # Fallback to local storage when API is unavailable or returns no rows.
+       
         bank_id = self._user_bank_id(user_id) if user_id else self.bank_id
         local_rows = (
             local_memory.get_user_memories(bank_id, user_id, limit=limit)
@@ -850,7 +888,7 @@ class HindsightService:
                         budget='mid'
                     )
                     reflect_insight = self._extract_reflect_insight(reflect_payload)
-                    if self._is_low_signal_reflect(reflect_insight):
+                    if self._is_low_signal_reflect(reflect_insight) or not self._is_actionable_reflect(reflect_insight):
                         reflect_insight = ""
                     if reflect_insight:
                         print(f"[SUCCESS] shadow reflect synthesis from bank={bank}")
@@ -858,7 +896,7 @@ class HindsightService:
                 except Exception as e:
                     print(f"[WARNING] shadow reflect failed for bank={bank}: {str(e)}")
 
-            # Query recent study topics from conversation history
+           
             memories: List[Dict[str, Any]] = []
             for bank in self._bank_candidates(user_id):
                 try:
@@ -873,11 +911,11 @@ class HindsightService:
             
             print(f"[SUCCESS] reflect_cognitive_shadow: Retrieved {len(memories)} memories for analysis")
             
-            # Extract topics and confusion patterns from memories
+           
             topics = []
             errors = []
             quiz_low_topics = []
-            for m in memories[:10]:  # Analyze last 10 memories
+            for m in memories[:10]:  
                 if not isinstance(m, dict):
                     continue
                 content = str(m.get("content", "") or m.get("text", ""))
@@ -892,7 +930,7 @@ class HindsightService:
                     if error_type:
                         errors.append(error_type)
 
-                    # Dense quiz signal: topic + score + mistakes informs true weak-area prediction.
+                    
                     quiz_score = metadata.get("quiz_score")
                     quiz_total = metadata.get("quiz_total")
                     quiz_ratio = metadata.get("quiz_score_ratio")
@@ -907,15 +945,14 @@ class HindsightService:
                         ratio_val = None
 
                     if ratio_val is not None and topic:
-                        # Treat rounded 2/3 (0.667) as low score to preserve quiz-signal recall.
+                      
                         if ratio_val <= 0.67:
                             quiz_low_topics.append(str(topic))
                             errors.append("low_quiz_score")
                         elif ratio_val >= 0.9:
                             errors.append("quiz_mastery")
 
-                # Some recall rows carry quiz info only in free text with null metadata/context.
-                # Parse score/topic directly from text so evidence can still include quiz weakness.
+              
                 quiz_text = content.lower()
                 if "quiz" in quiz_text:
                     text_topic = None
@@ -958,19 +995,31 @@ class HindsightService:
                             topics.append(quiz_topic)
                             errors.append("low_quiz_score")
 
-            if quiz_low_topics:
+            if current_topic:
+                target_topic = str(current_topic).strip()
+                filtered_quiz_topics = [
+                    t for t in quiz_low_topics
+                    if self._is_topic_relevant(t, target_topic)
+                ]
+                quiz_low_topics = filtered_quiz_topics
+                topics = [target_topic] + [t for t in topics if not self._is_topic_relevant(t, target_topic)]
+            elif quiz_low_topics:
                 topics = quiz_low_topics + topics
 
             unique_quiz_low_topics = list(dict.fromkeys(quiz_low_topics))
             
-            # Map studied topics to next likely challenges
-            next_challenge = self._predict_next_challenge(topics, errors)
+            
+            next_challenge = self._predict_next_challenge(topics, errors, current_topic=current_topic)
+
+            evidence = next_challenge["evidence"]
+            if unique_quiz_low_topics:
+                evidence.append(f"Quiz weakness detected in: {', '.join(unique_quiz_low_topics[:2])}")
             
             return {
                 "prediction": reflect_insight or next_challenge["prediction"],
                 "confidence": next_challenge["confidence"],
-                "evidence": next_challenge["evidence"] + ([f"Quiz weakness detected in: {', '.join(unique_quiz_low_topics[:2])}"] if unique_quiz_low_topics else []),
-                "recent_topics": topics[:5],  # Topics user studied
+                "evidence": evidence,
+                "recent_topics": topics[:5], 
                 "reflect_insight": reflect_insight,
                 "demo_mode": False
             }
@@ -993,7 +1042,7 @@ class HindsightService:
             
             print(f"[SUCCESS] recall_global_contagion: Got {len(memories)} results")
             
-            # Extract strategy hints from results - safely handle None/non-dict values
+           
             hints = []
             for m in memories:
                 if not isinstance(m, dict):
@@ -1062,9 +1111,9 @@ class HindsightService:
             for i in range(min(limit, 5))
         ]
     
-    def _predict_next_challenge(self, topics: List[str], errors: List[str]) -> Dict:
+    def _predict_next_challenge(self, topics: List[str], errors: List[str], current_topic: Optional[str] = None) -> Dict:
         """Predict next struggle based on studied topics and error patterns."""
-        # Create topic-to-related-challenge mappings (hardcoded for performance on core CS)
+      
         challenge_map = {
             "recursion": {"next": "Dynamic Programming", "reason": "memoization and overlapping subproblems"},
             "loops": {"next": "Nested Data Structures", "reason": "multi-dimensional iterations"},
@@ -1078,7 +1127,8 @@ class HindsightService:
             "pointers": {"next": "Memory Management", "reason": "stack vs heap allocation patterns"},
         }
         
-        # Find most relevant challenge from studied topics
+     
+        anchor_topic = (current_topic or (topics[0] if topics else "fundamentals")).strip()
         next_topic = None
         reason = ""
         
@@ -1092,19 +1142,19 @@ class HindsightService:
             if next_topic:
                 break
         
-        # If NOT in hardcoded map, use Groq LLM to predict intelligently
+      
         if not next_topic:
-            next_topic, reason = self._predict_next_challenge_with_llm(topics[0] if topics else "fundamentals")
+            next_topic, reason = self._predict_next_challenge_with_llm(anchor_topic)
         
-        # Generate confidence based on error history
-        confidence = 0.75 + (len(errors) * 0.05)  # Higher confidence if more errors suggest pattern
-        confidence = min(confidence, 0.95)  # Cap at 95%
+     
+        confidence = 0.75 + (len(errors) * 0.05)  
+        confidence = min(confidence, 0.95) 
         
-        prediction_text = f"Your Cognitive Twin predicts you'll struggle with {next_topic} next. You've been learning about {', '.join(topics[:2]) if topics else 'fundamentals'}, so the next challenge will be {reason}."
+        prediction_text = f"Your Cognitive Twin predicts a likely challenge in {next_topic}. Based on your recent work in {anchor_topic}, friction may appear around {reason}."
         
         evidence = [
-            f"Progression pattern: mastering {topics[0] if topics else 'basics'} often leads to {next_topic} challenges",
-            f"Common error: {errors[0] if errors else 'state management'} suggests you may encounter similar issues in {next_topic}"
+            f"Topic signal: recent activity centers on {anchor_topic} and the next likely stretch is {next_topic}",
+            f"Error signal: {errors[0] if errors else 'concept transfer friction'} appears when moving from {anchor_topic} to {next_topic}"
         ]
         
         return {
@@ -1137,10 +1187,10 @@ Now output for input: {current_topic}"""
         try:
             response = llm_service.generate(prompt, max_tokens=80, temperature=0.3)
             
-            # Remove thinking tags first
+           
             response = response.replace("<think>", "").replace("</think>", "")
             
-            # Parse the response
+           
             lines = response.strip().split('\n')
             next_topic = "Advanced Concepts"
             reason = "deepening your understanding"
@@ -1152,11 +1202,11 @@ Now output for input: {current_topic}"""
                 elif "Reason:" in line:
                     reason = line.split("Reason:")[-1].strip()
             
-            # Cleanup
+           
             next_topic = next_topic.replace("**", "").replace("*", "").strip()
             reason = reason.replace("**", "").replace("*", "").strip()
             
-            # Validate we got meaningful output
+         
             if next_topic and len(next_topic) > 3 and len(reason) > 10 and "Advanced Concepts" not in next_topic.lower():
                 print(f"[DEBUG] LLM predicted next challenge: {current_topic} → {next_topic}")
                 return next_topic, reason
@@ -1165,7 +1215,7 @@ Now output for input: {current_topic}"""
                 
         except Exception as e:
             print(f"[DEBUG] LLM prediction failed: {e}")
-            # Fallback: return generic progression
+           
             return "Advanced Concepts", f"extending your knowledge of {current_topic}"
     
     def _get_demo_shadow_response(self) -> Dict:
@@ -1193,13 +1243,13 @@ Now output for input: {current_topic}"""
     
     def _generate_recommendation(self, helpful_patterns: List[Dict], topic: str = "this concept") -> str:
         """Generate detailed, educational, teaching-focused recommendations using Groq LLM."""
-        # First try to extract actual hints from patterns
+     
         hints = [p["hint_used"] for p in helpful_patterns if p.get("hint_used")]
         if hints:
             most_helpful = max(set(hints), key=hints.count)
             return f"Last time you felt this confused about {topic}, '{most_helpful}' helped you understand it. Try that approach again, and pay attention to how it clarifies the concept."
         
-        # Use Groq LLM to generate dynamic, topic-specific recommendations
+    
         from .llm_service import llm_service
         
         prompt = f"""You are a tutor. Write a teaching recommendation for {topic}.
@@ -1216,11 +1266,11 @@ START WRITING THE RECOMMENDATION NOW (not an intro, the actual recommendation):"
         try:
             recommendation = llm_service.generate(prompt, max_tokens=700, temperature=0.5)
             
-            # Remove XML think tags first
+        
             recommendation = recommendation.replace("<think>", "").replace("</think>", "")
             recommendation = recommendation.strip()
             
-            # Aggressive cleanup: remove thinking and meta lines
+       
             lines = recommendation.split('\n')
             cleaned_lines = []
             
@@ -1229,7 +1279,7 @@ START WRITING THE RECOMMENDATION NOW (not an intro, the actual recommendation):"
                 if not stripped:
                     continue
                     
-                # Skip obvious thinking markers
+             
                 thinking_markers = [
                     'putting it all together',
                     'keep sentences',
@@ -1267,7 +1317,7 @@ START WRITING THE RECOMMENDATION NOW (not an intro, the actual recommendation):"
             
             recommendation = '\n'.join(cleaned_lines).strip()
             
-            # If we got meaningful content, return it
+          
             if len(recommendation) > 150:
                 return recommendation
             else:
@@ -1275,9 +1325,9 @@ START WRITING THE RECOMMENDATION NOW (not an intro, the actual recommendation):"
                 
         except Exception as e:
             print(f"[WARNING] LLM recommendation failed: {str(e)}, using fallback")
-            # Fallback to generic fallback if LLM fails
+           
             return f"To truly understand {topic}, start by breaking it into smaller components. Learn one component at a time deeply, rather than trying to understand everything at once. Always work through concrete examples by hand before jumping to code. Write down your thought process - what assumptions are you making? What invariants must be true? When stuck, return to the fundamentals: what's the simplest version of this problem? Master that first, then add complexity gradually. Practice consistently - understanding comes from repeated engagement with problems, not just reading solutions."
 
 
-# Singleton instance for easy import across the app
+
 hindsight_service = HindsightService()

@@ -48,14 +48,14 @@ class ResonanceEngine:
                 **{f"data_{k}": str(v) for k, v in interaction_data.items()}
             }
             
-            # Asynchronously retain without blocking
+         
             await self.hindsight.retain_study_session(
                 content=content,
                 context=metadata
             )
             print(f"✓ [RETAINED] {engine_feature} interaction for user={user_id}, topic={topic}")
         except Exception as e:
-            # Never block the main flow - just log warnings
+            
             print(f"⚠ [WARNING] Failed to retain interaction: {str(e)}")
     
     def _get_connection_confidence(self, num_connections: int) -> float:
@@ -78,14 +78,14 @@ class ResonanceEngine:
         insights = await self.hindsight.get_user_insights(user_id)
         memory_context = self._format_insights(insights)
 
-        # Priority 1: Use real user-specific Hindsight memories (deterministic, non-random)
+        
         connections = await self._find_graph_connections(topic, user_id, memory_context)
         demo_mode = False
 
         if connections:
             print(f"[DEBUG] Resonance: Using Hindsight-backed connections for '{topic}'")
         else:
-            # Priority 2: Curated deterministic fallback for known topics
+           
             hardcoded = self._get_demo_connections(topic)
             is_curated = not any(conn["topic"] == "foundational concepts" for conn in hardcoded[:1])
 
@@ -93,7 +93,7 @@ class ResonanceEngine:
                 connections = hardcoded
                 print(f"[DEBUG] Resonance: Using curated fallback for '{topic}'")
             else:
-                # Priority 3: Deterministic fallback from user insight profile.
+               
                 connections = self._connections_from_user_insights(topic, insights)
                 if connections:
                     print(f"[DEBUG] Resonance: Using insight-profile fallback for '{topic}'")
@@ -116,7 +116,7 @@ class ResonanceEngine:
             "demo_mode": demo_mode
         }
         
-        # ⚡ CRITICAL: Retain this interaction to hindsight for future recalls
+      
         await self._retain_interaction(
             content=f"Resonance query for {topic}: found {len(connections)} connections",
             user_id=user_id,
@@ -178,10 +178,10 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
         try:
             response = self.llm.generate(prompt, max_tokens=800, temperature=0.3)
             
-            # Remove thinking tags
+           
             response = response.replace("<think>", "").replace("</think>", "")
             
-            # Parse LLM response to extract connections
+         
             connections = []
             lines = response.split('\n')
             
@@ -189,7 +189,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             for line in lines:
                 line = line.strip()
                 if not line or line.startswith('Think') or line.startswith('---'):
-                    # Empty line or thinking line - might separate connections
+                 
                     if "Topic" in current_conn and "Strength" in current_conn:
                         conn = self._parse_connection_dict(current_conn)
                         if conn:
@@ -198,7 +198,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
                     continue
                 
                 if line.startswith("Topic:"):
-                    if current_conn.get("Topic"):  # Save previous if exists
+                    if current_conn.get("Topic"): 
                         conn = self._parse_connection_dict(current_conn)
                         if conn:
                             connections.append(conn)
@@ -214,13 +214,12 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
                 elif line.startswith("Depth:"):
                     current_conn["Depth"] = line.replace("Depth:", "").strip()
             
-            # Don't forget the last connection
             if "Topic" in current_conn and "Strength" in current_conn:
                 conn = self._parse_connection_dict(current_conn)
                 if conn:
                     connections.append(conn)
             
-            # Clean thinking words from all text fields
+        
             for conn in connections:
                 if "reason" in conn:
                     conn["reason"] = self._clean_thinking_text(conn["reason"])
@@ -229,12 +228,12 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
                 if "depth" in conn:
                     conn["depth"] = self._clean_thinking_text(conn["depth"])
             
-            # Return top 5 connections with valid data
+        
             valid_connections = [c for c in connections if c and "topic" in c]
             
             if valid_connections:
                 print(f"[DEBUG] Resonance LLM generated {len(valid_connections)} connections for '{topic}'")
-                return valid_connections[:5]  # Return 5 instead of 3
+                return valid_connections[:5]  
             
             print(f"[DEBUG] Resonance LLM parsing failed for '{topic}' - returning empty")
             return []
@@ -389,12 +388,11 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             if not results:
                 return []
 
-            # Prefer deterministic extraction from Hindsight records to avoid random outputs.
             deterministic = self._extract_connections_from_memories(topic, results)
             if deterministic:
                 return deterministic
 
-            # As a secondary option, use LLM summarization over real Hindsight results.
+         
             return await self._extract_connections_with_llm(topic, results, memory_context)
             
         except Exception as e:
@@ -405,7 +403,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
         """
         Use Groq LLM to analyze Hindsight results and extract meaningful topic connections.
         """
-        # Format Hindsight results into a prompt-friendly summary
+       
         results_text = ""
         for i, result in enumerate(hindsight_results[:5]):
             if isinstance(result, dict):
@@ -413,7 +411,7 @@ Depth: [Why learning this deepens understanding - 1-2 sentences]"""
             else:
                 content = str(result)
             
-            # Limit content per result
+          
             if len(content) > 200:
                 content = content[:200] + "..."
             
@@ -449,8 +447,7 @@ Now extract connections for "{current_topic}":"""
 
         try:
             response = llm_service.generate(prompt, max_tokens=300, temperature=0.6)
-            
-            # Parse LLM response to extract connections
+    
             connections = []
             lines = response.split('\n')
             
@@ -458,7 +455,7 @@ Now extract connections for "{current_topic}":"""
             for line in lines:
                 line = line.strip()
                 if not line:
-                    # Empty line might separate connections
+                    
                     if "Topic" in current_conn and "Strength" in current_conn:
                         conn = self._parse_connection_dict(current_conn)
                         if conn:
@@ -467,7 +464,7 @@ Now extract connections for "{current_topic}":"""
                     continue
                 
                 if line.startswith("Topic:"):
-                    if current_conn.get("Topic"):  # Save previous if exists
+                    if current_conn.get("Topic"):  
                         conn = self._parse_connection_dict(current_conn)
                         if conn:
                             connections.append(conn)
@@ -481,13 +478,13 @@ Now extract connections for "{current_topic}":"""
                 elif line.startswith("Reason:"):
                     current_conn["Reason"] = line.replace("Reason:", "").strip()
             
-            # Don't forget the last connection
+           
             if "Topic" in current_conn:
                 conn = self._parse_connection_dict(current_conn)
                 if conn:
                     connections.append(conn)
             
-            # Return top 3 connections with valid data
+          
             valid_connections = [c for c in connections if c and "topic" in c]
             
             if valid_connections:
@@ -529,7 +526,7 @@ Now extract connections for "{current_topic}":"""
         
         s = text.lower()
         
-        # Thinking/planning patterns to filter
+       
         thinking_patterns = [
             "maybe", "i think", "let me", "think about", "wait,",
             "also,", "so,", "then,", "but", "or maybe", "perhaps",
@@ -538,14 +535,14 @@ Now extract connections for "{current_topic}":"""
             "let's", "consider", "important to note", "worth noting",
         ]
         
-        # Check if text starts with thinking pattern
+      
         for pattern in thinking_patterns:
             if s.startswith(pattern):
-                # Remove the pattern and any following words that are filler
+              
                 text = text[len(pattern):].strip().lstrip("- ")
                 break
         
-        # Remove any remaining meta-language
+       
         for pattern in ["for example,", "such as", "like", "for instance"]:
             if pattern in s:
                 s = s.replace(pattern, "").strip()
@@ -780,8 +777,8 @@ Now extract connections for "{current_topic}":"""
         
         connections = connection_map.get(topic.lower(), default)
         
-        # For demo, add more if we only have few
+      
         if len(connections) < 5:
             connections.extend(default)
         
-        return connections[:5]  # Return 5 instead of 3
+        return connections[:5]  
