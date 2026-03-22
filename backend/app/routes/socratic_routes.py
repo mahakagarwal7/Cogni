@@ -58,6 +58,32 @@ async def reflect_on_response(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/hint", response_model=APIResponse)
+async def get_socratic_hint(
+    concept: str,
+    previous_question: str,
+    user_response: str = Query("", description="Optional latest user response for hint personalization"),
+    confusion_level: int = Query(3, ge=1, le=5, description="Confusion level from 1 (clear) to 5 (very confused)"),
+    user_id: str = Query("student", description="User ID for personalization")
+):
+    """Return a micro-hint for the current Socratic step with minimal overhead."""
+    try:
+        engine = SocraticEngine()
+        result = await engine.get_hint(
+            concept=concept,
+            previous_question=previous_question,
+            user_id=user_id,
+            confusion_level=confusion_level,
+            user_response=user_response,
+        )
+        return APIResponse(
+            status="success",
+            data=result,
+            demo_mode=result.get("demo_mode", False)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/log", response_model=APIResponse)
 async def log_misconception(misconception: Misconception):
     """Save a misconception to memory"""

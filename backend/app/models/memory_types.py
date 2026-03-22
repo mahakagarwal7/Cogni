@@ -111,6 +111,7 @@ class QuizQuestion(BaseModel):
     id: int = Field(..., ge=1, description="Question index")
     question: str = Field(..., description="Quiz question text")
     expected_answer: str = Field(..., description="Reference answer")
+    options: Optional[List[str]] = Field(default=None, description="Optional multiple-choice options")
 
 
 class QuizSubmission(BaseModel):

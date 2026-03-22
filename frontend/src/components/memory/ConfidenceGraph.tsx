@@ -1,8 +1,10 @@
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -10,7 +12,6 @@ import {
 import {
   Line,
   LineChart,
-  ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
@@ -44,6 +45,49 @@ type ConfidenceGraphProps = {
 const pretty = (value: string) => value.replace(/_/g, " ");
 const COLORS = ["#22d3ee", "#a78bfa", "#34d399", "#f472b6", "#f59e0b", "#60a5fa"];
 
+type MeasuredChartProps = {
+  className: string;
+  minHeight: number;
+  children: (size: { width: number; height: number }) => React.ReactNode;
+};
+
+function MeasuredChart({ className, minHeight, children }: MeasuredChartProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) {
+      return;
+    }
+
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      const width = Math.max(0, Math.floor(rect.width));
+      const height = Math.max(minHeight, Math.floor(rect.height));
+      setSize({ width, height });
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [minHeight]);
+
+  const ready = size.width > 16 && size.height > 16;
+
+  return (
+    <div ref={containerRef} className={className}>
+      {ready ? (
+        children(size)
+      ) : (
+        <div className="h-full w-full animate-pulse rounded-md bg-zinc-900/60" />
+      )}
+    </div>
+  );
+}
+
 function buildCombinedSeries(series: ConfidenceSeries[]) {
   const byIndex: Record<number, Record<string, number | string>> = {};
 
@@ -76,7 +120,7 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
       <CardHeader className="pb-3">
         <CardTitle className="text-zinc-100">Confidence Graph</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-w-0">
         {loading ? (
           <div className="grid gap-3 md:grid-cols-2">
             {Array.from({ length: 4 }).map((_, idx) => (
@@ -88,12 +132,12 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
             No confidence trends available yet. Keep interacting and submitting quizzes to build trend lines.
           </div>
         ) : (
-          <div className="space-y-5">
-            <div className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-4">
+          <div className="space-y-5 min-w-0">
+            <div className="min-w-0 rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-4">
               <p className="mb-3 text-sm font-medium text-zinc-200">Overall Trend Comparison (Top Topics)</p>
-              <div className="h-72 w-full rounded-md bg-zinc-950/70 p-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={buildCombinedSeries(series)} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
+              <MeasuredChart className="h-72 w-full min-w-0 rounded-md bg-zinc-950/70 p-2" minHeight={220}>
+                {({ width, height }) => (
+                  <LineChart width={width} height={height} data={buildCombinedSeries(series)} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                     <XAxis dataKey="session" stroke="#a1a1aa" />
                     <YAxis stroke="#a1a1aa" domain={[0, 100]} />
@@ -115,11 +159,11 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
                       />
                     ))}
                   </LineChart>
-                </ResponsiveContainer>
-              </div>
+                )}
+              </MeasuredChart>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2 min-w-0">
             {series.slice(0, 6).map((item) => {
               const currentPct = Math.round(Math.max(0, Math.min(1, item.current_confidence)) * 100);
               const trendLabel = item.improvement > 0 ? `+${Math.round(item.improvement * 100)}%` : `${Math.round(item.improvement * 100)}%`;
@@ -130,14 +174,14 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
               const topicPoints = buildTopicPoints(item.points);
 
               return (
-                <div key={item.topic} className="rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-3 transition-all duration-300 hover:border-cyan-500/50">
+                <div key={item.topic} className="min-w-0 rounded-lg border border-zinc-700/60 bg-zinc-900/60 p-3 transition-all duration-300 hover:border-cyan-500/50">
                   <div className="mb-2 flex items-center justify-between">
                     <p className="text-sm font-medium text-zinc-200">{pretty(item.topic)}</p>
                     <span className="text-xs text-zinc-400">{item.sessions_studied} sessions</span>
                   </div>
-                  <div className="h-28 w-full rounded-md bg-zinc-950/70 p-1">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={topicPoints}>
+                  <MeasuredChart className="h-28 w-full min-w-0 rounded-md bg-zinc-950/70 p-1" minHeight={90}>
+                    {({ width, height }) => (
+                      <LineChart width={width} height={height} data={topicPoints}>
                         <XAxis dataKey="session" hide />
                         <YAxis hide domain={[0, 100]} />
                         <Tooltip
@@ -154,8 +198,8 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
                           isAnimationActive
                         />
                       </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+                    )}
+                  </MeasuredChart>
                   <div className="mt-2 flex items-center justify-between text-xs">
                     <span className="text-cyan-300">Current: {currentPct}%</span>
                     <span className={trendClass}>Trend: {trendLabel}</span>
@@ -176,10 +220,13 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
                       <DialogContent className="max-w-4xl border-zinc-700 bg-zinc-900 text-zinc-100">
                         <DialogHeader>
                           <DialogTitle>{pretty(item.topic)} - Detailed Performance</DialogTitle>
+                          <DialogDescription>
+                            Expanded confidence trend for {pretty(item.topic)} across your recorded sessions.
+                          </DialogDescription>
                         </DialogHeader>
-                        <div className="h-[420px] w-full rounded-md bg-zinc-950/70 p-2">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={topicPoints} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
+                        <MeasuredChart className="h-[420px] w-full min-w-0 rounded-md bg-zinc-950/70 p-2" minHeight={320}>
+                          {({ width, height }) => (
+                            <LineChart width={width} height={height} data={topicPoints} margin={{ top: 8, right: 16, left: 4, bottom: 8 }}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#3f3f46" />
                               <XAxis dataKey="session" stroke="#a1a1aa" />
                               <YAxis stroke="#a1a1aa" domain={[0, 100]} />
@@ -197,8 +244,8 @@ export function ConfidenceGraph({ series, loading }: ConfidenceGraphProps) {
                                 isAnimationActive
                               />
                             </LineChart>
-                          </ResponsiveContainer>
-                        </div>
+                          )}
+                        </MeasuredChart>
                       </DialogContent>
                     </Dialog>
                   </div>

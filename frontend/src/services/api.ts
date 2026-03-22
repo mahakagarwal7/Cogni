@@ -92,6 +92,24 @@ export const api = {
     return res.json();
   },
 
+  async getSocraticHint(
+    concept: string,
+    previousQuestion: string,
+    userId: string = 'student',
+    confusionLevel: number = 3,
+    userResponse: string = ''
+  ): Promise<APIResponse> {
+    const params = new URLSearchParams({
+      concept,
+      previous_question: previousQuestion,
+      user_id: userId,
+      confusion_level: String(confusionLevel),
+      user_response: userResponse,
+    });
+    const res = await fetch(`${API_URL}/socratic/hint?${params.toString()}`, { method: 'POST' });
+    return res.json();
+  },
+
   
   async getShadowPrediction(topic?: string, days: number = 7, userId: string = 'student'): Promise<APIResponse> {
     const params = new URLSearchParams({ days: String(days), user_id: userId });
@@ -122,7 +140,13 @@ export const api = {
 
   async getMemoryTimeline(userId: string, limit: number = 40): Promise<APIResponse> {
     const params = new URLSearchParams({ user_id: userId, limit: String(limit) });
-    const res = await fetch(`${API_URL}/memory/timeline?${params.toString()}`);
+    const res = await fetch(`${API_URL}/memory/timeline?${params.toString()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache'
+      }
+    });
     return res.json();
   },
 
@@ -132,13 +156,25 @@ export const api = {
       top_topics: String(topTopics),
       limit: String(limit),
     });
-    const res = await fetch(`${API_URL}/memory/confidence?${params.toString()}`);
+    const res = await fetch(`${API_URL}/memory/confidence?${params.toString()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache'
+      }
+    });
     return res.json();
   },
 
   async getMemoryCognitiveSummary(userId: string, refresh: boolean = false): Promise<APIResponse> {
     const params = new URLSearchParams({ user_id: userId, refresh: String(refresh) });
-    const res = await fetch(`${API_URL}/memory/summary?${params.toString()}`);
+    const res = await fetch(`${API_URL}/memory/summary?${params.toString()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache'
+      }
+    });
     return res.json();
   },
 

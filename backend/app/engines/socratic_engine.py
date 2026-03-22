@@ -8,7 +8,7 @@ from app.services.hindsight_service import HindsightService, hindsight_service
 from app.services.llm_service import llm_service
 from app.services.prompt_template_service import prompt_template_service
 from app.models.memory_types import Misconception
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import re
 
 class SocraticEngine:
@@ -272,6 +272,435 @@ class SocraticEngine:
             lines.append(f"- topic={topic}; issue={issue}; preferred_style={style}")
 
         return "\n".join(lines)
+
+    def _concept_tokens(self, concept: str) -> List[str]:
+        return [token for token in concept.lower().replace("_", " ").split() if len(token) > 2]
+
+    def _extract_focus_terms(self, text: str, concept: str = "") -> List[str]:
+        """Extract compact focus terms to keep follow-up questions tied to student response."""
+        cleaned = re.sub(r"[^a-zA-Z0-9_\-\s]", " ", text.lower())
+        tokens = [tok.strip() for tok in cleaned.split() if len(tok.strip()) > 3]
+        stopwords = {
+            "this", "that", "with", "from", "about", "because", "there", "their", "would", "could",
+            "should", "which", "where", "when", "what", "have", "has", "your", "into", "than",
+            "then", "they", "them", "just", "very", "some", "more", "like", "also", "used",
+            "using", "does", "dont", "know", "think", "seems", "seem", "much", "many",
+        }
+        concept_tokens = set(self._concept_tokens(concept))
+
+        ordered_unique: List[str] = []
+        for tok in tokens:
+            if tok in stopwords:
+                continue
+            if tok in concept_tokens:
+                continue
+            if tok not in ordered_unique:
+                ordered_unique.append(tok)
+            if len(ordered_unique) >= 5:
+                break
+        return ordered_unique
+
+    def _history_unresolved_focus(self, history: Dict[str, Any], concept: str) -> List[str]:
+        """Extract unresolved misconception snippets for current concept from Socratic history."""
+        rows = history.get("history") if isinstance(history, dict) else []
+        if not isinstance(rows, list):
+            return []
+
+        concept_lower = concept.lower().strip()
+        focus: List[str] = []
+        for row in rows[:15]:
+            if not isinstance(row, dict):
+                continue
+            row_text = " ".join(
+                str(row.get(key, ""))
+                for key in ["belief", "challenge_question", "content", "topic", "concept"]
+            ).strip()
+            if not row_text:
+                continue
+            outcome = str(row.get("outcome", "")).lower().strip()
+            if outcome and outcome != "unresolved":
+                continue
+            if concept_lower and concept_lower not in row_text.lower() and not any(t in row_text.lower() for t in self._concept_tokens(concept_lower)):
+                continue
+            focus.append(row_text[:120])
+            if len(focus) >= 3:
+                break
+        return focus
+
+    def _normalize_question_text(self, question: str) -> str:
+        cleaned = question.strip()
+        cleaned = re.sub(r"^\*\*next question\*\*:\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^\*\*question\*\*:\s*", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    def _build_response_aware_fallback_followup(
+        self,
+        concept: str,
+        user_response: str,
+        previous_question: str,
+        confusion_level: int,
+    ) -> str:
+        """Deterministic follow-up that references student's own answer focus."""
+        response_terms = self._extract_focus_terms(user_response, concept)
+        if response_terms:
+            focus = response_terms[0]
+            if confusion_level >= 4:
+                return f"How does '{focus}' connect to the basic idea of {concept}?"
+            if confusion_level >= 2:
+                return f"What assumption about '{focus}' might fail in {concept}?"
+            return f"Why is '{focus}' important when solving {concept} problems?"
+
+        if previous_question:
+            prev = self._normalize_question_text(previous_question)
+            if prev:
+                return f"Based on your answer, what part of {concept} is still unclear to you?"
+
+        return self._build_followup_from_response(concept, user_response, confusion_level)
+
+    def _is_topic_aligned(self, question: str, concept: str) -> bool:
+        q = question.lower()
+        concept_clean = concept.lower().strip()
+        if not concept_clean:
+            return True
+        if concept_clean in q:
+            return True
+        tokens = self._concept_tokens(concept_clean)
+        if not tokens:
+            return True
+        token_hits = sum(1 for token in tokens if token in q)
+        return token_hits >= 1
+
+    def _build_hindsight_topic_context(
+        self,
+        concept: str,
+        history: Dict[str, Any],
+        insights: List[Dict[str, Any]],
+    ) -> str:
+        """Build compact hindsight context focused on current concept."""
+        concept_lower = concept.lower().strip()
+        tokens = self._concept_tokens(concept_lower)
+
+        relevant_history: List[str] = []
+        history_rows = history.get("history") if isinstance(history, dict) else []
+        if isinstance(history_rows, list):
+            for row in history_rows[:10]:
+                if not isinstance(row, dict):
+                    continue
+                row_text = " ".join(
+                    str(row.get(key, ""))
+                    for key in ["content", "belief", "challenge_question", "topic", "concept"]
+                ).lower()
+                if concept_lower in row_text or any(token in row_text for token in tokens):
+                    belief = str(row.get("belief") or row.get("topic") or concept)
+                    outcome = str(row.get("outcome", "unknown"))
+                    relevant_history.append(f"- prior_belief={belief}; outcome={outcome}")
+                if len(relevant_history) >= 3:
+                    break
+
+        relevant_insights: List[str] = []
+        for row in insights[:10]:
+            if not isinstance(row, dict):
+                continue
+            data = row.get("data") if isinstance(row.get("data"), dict) else {}
+            topic = str(data.get("topic", "general"))
+            issue = str(data.get("issue", "unclear_concept"))
+            style = str(data.get("preferred_style", "guided"))
+            topic_lower = topic.lower()
+            if concept_lower in topic_lower or any(token in topic_lower for token in tokens):
+                relevant_insights.append(f"- insight_topic={topic}; issue={issue}; style={style}")
+            if len(relevant_insights) >= 3:
+                break
+
+        resolved_count = history.get("resolved_count", 0) if isinstance(history, dict) else 0
+        unresolved_count = history.get("unresolved_count", 0) if isinstance(history, dict) else 0
+
+        context_lines = [
+            f"Concept focus: {concept}",
+            f"Prior outcomes: resolved={resolved_count}, unresolved={unresolved_count}",
+        ]
+        if relevant_history:
+            context_lines.append("Related history:")
+            context_lines.extend(relevant_history)
+        if relevant_insights:
+            context_lines.append("Related insight patterns:")
+            context_lines.extend(relevant_insights)
+
+        return "\n".join(context_lines)
+
+    def _enforce_topic_alignment(
+        self,
+        question: str,
+        concept: str,
+        user_belief: str,
+        confusion_level: int,
+        user_response: Optional[str] = None,
+    ) -> str:
+        """Deterministically force topic relevance when model output drifts."""
+        clean_question = question.strip()
+        if clean_question and self._is_topic_aligned(clean_question, concept):
+            return clean_question if clean_question.endswith("?") else f"{clean_question}?"
+
+        if user_response is not None:
+            forced = self._build_followup_from_response(concept, user_response, confusion_level)
+        else:
+            forced = self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        if not self._is_topic_aligned(forced, concept):
+            forced = f"How does this idea apply to {concept} in one specific example?"
+        return forced if forced.endswith("?") else f"{forced}?"
+
+    def _build_hint(self, concept: str, question: str, confusion_level: int, response_type: str = "") -> str:
+        """Generate a deterministic micro-hint without extra LLM calls."""
+        if response_type in {"no_knowledge", "vague_response"} or confusion_level >= 4:
+            return f"Start small: define one core property of {concept} in your own words."
+        if response_type == "has_knowledge":
+            return f"Use your prior idea and test it with one concrete {concept} example."
+        if response_type == "detailed_response":
+            return f"Good progress. Now test your reasoning against an edge case in {concept}."
+        if question and question.lower().startswith("why"):
+            return f"Focus on cause and effect: what changes in {concept} when your assumption changes?"
+        if question and question.lower().startswith("how"):
+            return f"Break it into steps: what is step one for solving this in {concept}?"
+        return f"Anchor your answer in one specific example related to {concept}."
+
+    def analyzeResponse(self, response: str) -> Dict[str, Any]:
+        """Modular adaptive response analysis for Socratic loop."""
+        response_type = self._classify_response(response)
+        analysis_text = self._analyze_response(response)
+        score_map = {
+            "no_knowledge": 0.2,
+            "vague_response": 0.35,
+            "has_knowledge": 0.65,
+            "detailed_response": 0.8,
+        }
+        understanding_score = score_map.get(response_type, 0.5)
+        return {
+            "response_type": response_type,
+            "analysis": analysis_text,
+            "understanding_score": understanding_score,
+            "needs_hint": response_type in {"no_knowledge", "vague_response"},
+            "is_progressing": response_type in {"has_knowledge", "detailed_response"},
+        }
+
+    async def updateLearningState(
+        self,
+        concept: str,
+        user_id: str,
+        response_analysis: Dict[str, Any],
+        previous_question: str = "",
+        user_response: str = "",
+    ) -> Dict[str, Any]:
+        """Persist adaptive learning state to memory and return summarized state."""
+        response_type = str(response_analysis.get("response_type", "vague_response"))
+        understanding_score = float(response_analysis.get("understanding_score", 0.5))
+
+        if response_type in {"has_knowledge", "detailed_response"}:
+            outcome = "resolved"
+            learning_state = "progressing"
+        elif response_type == "no_knowledge":
+            outcome = "unresolved"
+            learning_state = "foundational_gap"
+        else:
+            outcome = "unresolved"
+            learning_state = "needs_clarification"
+
+        await self._retain_interaction(
+            content=f"Adaptive Socratic state update for {concept}",
+            user_id=user_id,
+            topic=concept,
+            engine_feature="socratic_learning_state",
+            interaction_data={
+                "previous_question": previous_question,
+                "user_response": user_response,
+                "response_type": response_type,
+                "understanding_score": understanding_score,
+                "outcome": outcome,
+                "learning_state": learning_state,
+            },
+        )
+
+        return {
+            "outcome": outcome,
+            "learning_state": learning_state,
+            "understanding_score": understanding_score,
+            "response_type": response_type,
+        }
+
+    async def generateQuestion(
+        self,
+        context: Dict[str, Any],
+        hindsightData: Dict[str, Any],
+        userResponse: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Generate adaptive Socratic question with optional response-aware follow-up."""
+        concept = str(context.get("concept", "the topic")).strip() or "the topic"
+        user_belief = str(context.get("user_belief", "")).strip()
+        confusion_level = int(context.get("confusion_level", 3) or 3)
+        user_id = str(context.get("user_id", "anonymous"))
+        previous_question = str(context.get("previous_question", "")).strip()
+
+        history = hindsightData.get("history") if isinstance(hindsightData.get("history"), dict) else {}
+        insights = hindsightData.get("insights") if isinstance(hindsightData.get("insights"), list) else []
+        memory_context = self._build_hindsight_topic_context(concept, history, insights)
+        style_instruction = self._get_socratic_style(confusion_level)
+        unresolved_focus = self._history_unresolved_focus(history, concept)
+
+        response_analysis: Optional[Dict[str, Any]] = None
+        if userResponse is not None:
+            response_analysis = self.analyzeResponse(userResponse)
+            analysis_text = str(response_analysis.get("analysis", "Student response needs probing."))
+            response_type = str(response_analysis.get("response_type", "vague_response"))
+            response_terms = self._extract_focus_terms(userResponse, concept)
+            response_terms_text = ", ".join(response_terms[:3]) if response_terms else "none"
+            unresolved_text = " | ".join(unresolved_focus) if unresolved_focus else "none"
+            query = (
+                f"The student is learning {concept}. "
+                f"Previous question: '{previous_question}'. "
+                f"Student response: '{userResponse}'. "
+                f"Response type: {response_type}. "
+                f"Analysis: {analysis_text}. "
+                f"Response focus terms: {response_terms_text}. "
+                f"Unresolved memory focus: {unresolved_text}. "
+                f"Ask the NEXT Socratic question under 20 words, starting with What/How/Why. "
+                f"{style_instruction}"
+            )
+        else:
+            is_vague = self._is_vague_belief(user_belief)
+            if is_vague:
+                query = (
+                    f"The student is unsure about {concept}. "
+                    f"Ask a Socratic question to discover prior knowledge (What/How/Can you, under 20 words). "
+                    f"{style_instruction}"
+                )
+            else:
+                query = (
+                    f"Student believes: '{user_belief}' about {concept}. "
+                    f"Ask a Socratic question to test this belief (What/How/Why, under 20 words). "
+                    f"{style_instruction}"
+                )
+
+        prompt_seed = await prompt_template_service.generate_adaptive_prompt(
+            user_id=user_id,
+            query=query,
+            topic=concept,
+        )
+
+        prompt = f"""{prompt_seed}
+
+MEMORY SIGNALS:
+{memory_context}
+
+DIFFICULTY ADAPTATION:
+Confusion level: {confusion_level}/5
+Style rule: {style_instruction}
+
+SPECIFIC INSTRUCTION FOR THIS RESPONSE:
+Question must be explicitly about {concept} and mention {concept} or a direct property of it.
+If student response exists, the question must connect to at least one response focus term.
+Return ONLY a JSON object with a "question" key containing the Socratic question.
+Format: {{"question": "Your question here?"}}"""
+
+        question = ""
+        if self.llm.available:
+            try:
+                response = self.llm.generate(prompt, max_tokens=100, temperature=0.35)
+                question = self._extract_question_from_response(response)
+            except Exception:
+                question = ""
+
+        if not question:
+            if userResponse is not None:
+                question = self._build_followup_from_response(concept, userResponse, confusion_level)
+            else:
+                question = self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        question_lower = question.lower()
+        meta_markers = ["the student", "the goal is", "i need to", "socratic question to"]
+        if any(marker in question_lower for marker in meta_markers):
+            if userResponse is not None:
+                question = self._build_followup_from_response(concept, userResponse, confusion_level)
+            else:
+                question = self._build_level_fallback_question(concept, user_belief, confusion_level)
+
+        question = self._enforce_topic_alignment(
+            question=question,
+            concept=concept,
+            user_belief=user_belief,
+            confusion_level=confusion_level,
+            user_response=userResponse,
+        )
+
+        # For reflection turns, enforce anchoring to student's own response signals.
+        if userResponse is not None:
+            response_terms = self._extract_focus_terms(userResponse, concept)
+            if response_terms:
+                q_lower = question.lower()
+                anchored = any(term in q_lower for term in response_terms[:3])
+                if not anchored:
+                    question = self._build_response_aware_fallback_followup(
+                        concept=concept,
+                        user_response=userResponse,
+                        previous_question=previous_question,
+                        confusion_level=confusion_level,
+                    )
+                    question = self._enforce_topic_alignment(
+                        question=question,
+                        concept=concept,
+                        user_belief=user_belief,
+                        confusion_level=confusion_level,
+                        user_response=userResponse,
+                    )
+
+        hint = self._build_hint(
+            concept=concept,
+            question=question,
+            confusion_level=confusion_level,
+            response_type=str(response_analysis.get("response_type", "")) if response_analysis else "",
+        )
+
+        return {
+            "question": question,
+            "hint": hint,
+            "response_analysis": response_analysis,
+        }
+
+    async def get_hint(
+        self,
+        concept: str,
+        previous_question: str,
+        user_id: str = "anonymous",
+        confusion_level: int = 3,
+        user_response: str = "",
+    ) -> Dict[str, Any]:
+        """Return a micro-hint for current Socratic turn without an extra LLM call."""
+        analysis = self.analyzeResponse(user_response) if user_response.strip() else {"response_type": ""}
+        hint = self._build_hint(
+            concept=concept,
+            question=previous_question,
+            confusion_level=confusion_level,
+            response_type=str(analysis.get("response_type", "")),
+        )
+
+        await self._retain_interaction(
+            content=f"Socratic hint requested for {concept}",
+            user_id=user_id,
+            topic=concept,
+            engine_feature="socratic_hint",
+            interaction_data={
+                "previous_question": previous_question,
+                "hint": hint,
+                "confusion_level": confusion_level,
+            },
+        )
+
+        return {
+            "feature": "socratic_hint",
+            "concept": concept,
+            "previous_question": previous_question,
+            "hint": hint,
+            "confidence": self._get_default_confidence(),
+            "demo_mode": not self.llm.available,
+        }
     
     async def ask_socratic_question(self, concept: str, user_belief: str, user_id: str = "anonymous", confusion_level: int = 3) -> Dict[str, Any]:
         """
@@ -283,196 +712,18 @@ class SocraticEngine:
         # Get past dialogue history
         history = await self.hindsight.recall_socratic_history(concept, user_id=user_id)
         insights = await self.hindsight.get_user_insights(user_id)
-        memory_context = self._format_insights(insights)
         
-        # Check if belief is too vague - handle specially
-        is_vague = self._is_vague_belief(user_belief)
-        question_type = self._infer_question_type(user_belief, confusion_level)
-        
-        # PHASE 9: Generate killer prompt with adaptive rules
-        style_instruction = self._get_socratic_style(confusion_level)
-        
-        if is_vague:
-            # For vague beliefs, ask about their existing knowledge
-            query = (f"The student is unsure about {concept}. "
-                    f"Ask a Socratic question to find out what they already know about {concept} "
-                    f"(starts with What/How/Can you, under 20 words). {style_instruction}")
-        else:
-            # For specific beliefs, probe the misconception
-            query = (f"Student believes: '{user_belief}' about {concept}. "
-                    f"Ask a Socratic question to test this belief (starts with What/How/Why, under 20 words). "
-                    f"{style_instruction}")
-
-        killer_prompt = await prompt_template_service.generate_adaptive_prompt(
-            user_id=user_id,
-            query=query,
-            topic=concept
+        question_payload = await self.generateQuestion(
+            context={
+                "concept": concept,
+                "user_belief": user_belief,
+                "confusion_level": confusion_level,
+                "user_id": user_id,
+            },
+            hindsightData={"history": history, "insights": insights},
         )
-        
-        # Build prompt with killer template
-        prompt = f"""{killer_prompt}
-
-    DIFFICULTY ADAPTATION:
-    Confusion level: {confusion_level}/5
-    Style rule: {style_instruction}
-
-SPECIFIC INSTRUCTION FOR THIS RESPONSE:
-Return ONLY a JSON object with a "question" key containing the Socratic question.
-Format: {{"question": "Your question here?"}}"""
-        
-        response = self.llm.generate(prompt, max_tokens=100, temperature=0.3)
-        default_question = "Can you think of a simpler case or alternative approach?"
-        
-        question = ""
-        
-        # Debug: log raw response
-        print(f"[DEBUG] Raw response (first 250 chars): {repr(response[:250])}")
-        
-        # Aggressive cleanup: skip thinking, find JSON first
-        try:
-            # Remove <think> tags completely
-            cleaned = response.replace("<think>", "").replace("</think>", "")
-            
-            # Find JSON object - look for { ... }
-            json_match = None
-            brace_count = 0
-            in_json = False
-            start_pos = -1
-            
-            for i, char in enumerate(cleaned):
-                if char == "{":
-                    if not in_json:
-                        start_pos = i
-                        in_json = True
-                        brace_count = 1
-                    else:
-                        brace_count += 1
-                elif char == "}" and in_json:
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_str = cleaned[start_pos:i+1]
-                        try:
-                            import json
-                            parsed = json.loads(json_str)
-                            if "question" in parsed:
-                                question = str(parsed["question"]).strip()
-                                if question and not question.endswith("?"):
-                                    question = question + "?"
-                                break
-                        except json.JSONDecodeError:
-                            pass
-
-            # If JSON parsing didn't produce a question, fall back to first sensible line/question.
-            if not question:
-                cleaned_lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
-                for ln in cleaned_lines:
-                    low = ln.lower()
-                    if low.startswith("{") or low.startswith("}"):
-                        continue
-                    if low.startswith("question:"):
-                        ln = ln.split(":", 1)[1].strip()
-                    if len(ln) < 8:
-                        continue
-                    if ln.endswith("?"):
-                        question = ln
-                        break
-                if not question and cleaned_lines:
-                    candidate = cleaned_lines[0]
-                    if candidate.lower().startswith("question:"):
-                        candidate = candidate.split(":", 1)[1].strip()
-                    candidate = candidate.strip('"\'')
-                    if candidate:
-                        question = candidate if candidate.endswith("?") else f"{candidate}?"
-        except Exception as e:
-            print(f"[WARNING] Error extracting JSON: {e}")
-
-        if not question:
-            question = self._build_level_fallback_question(concept, user_belief, confusion_level)
-
-        # If the result is still generic, run one focused second pass to force a topic-specific question.
-        if question.strip().lower() == default_question.lower() and self.llm.available:
-            if is_vague:
-                second_prompt = f"""Write ONE Socratic question to find out what the student knows about {concept}.
-Rules:
-- Must start with What, Can you, or How
-- Must be specific to {concept}, not generic
-- Must be under 18 words
-- Return ONLY the question text
-- Examples: "What is one property of {concept}?", "Can you name a use of {concept}?"
-- Confusion level is {confusion_level}/5. {style_instruction}
-"""
-            else:
-                second_prompt = f"""Write ONE Socratic question about {concept} based on the student's belief: {user_belief}.
-
-Rules:
-- Must start with What, Why, or How
-- Must mention {concept}
-- Max 18 words
-- Return ONLY the question text
-- Do NOT use: 'Can you think of a simpler case or alternative approach?'
-- Confusion level is {confusion_level}/5. {style_instruction}
-"""
-            try:
-                second = self.llm.generate(second_prompt, max_tokens=60, temperature=0.4)
-                second_clean = second.replace("<think>", "").replace("</think>", "").strip()
-
-                # Prefer first explicit question sentence from model output.
-                candidates = []
-                for part in second_clean.replace("\n", " ").split("?"):
-                    p = part.strip().strip('"\'')
-                    if not p:
-                        continue
-                    p = f"{p}?"
-                    lower = p.lower()
-                    if lower.startswith(("what", "why", "how")):
-                        candidates.append(p)
-
-                # If model didn't return a clean question, synthesize one.
-                if candidates:
-                    second_clean = candidates[0]
-                else:
-                    second_clean = self._build_level_fallback_question(concept, user_belief, confusion_level)
-
-                if concept.lower() in second_clean.lower() and second_clean.lower() != default_question.lower():
-                    question = second_clean
-            except Exception:
-                pass
-        
-        # Guardrail: reject meta/planning text that sometimes slips through.
-        meta_markers = [
-            "the student",
-            "learning history",
-            "foundational",
-            "the goal is",
-            "socratic question to",
-            "i need to",
-            "okay,",
-        ]
-        q_lower = question.lower()
-        if any(marker in q_lower for marker in meta_markers):
-            question = self._build_level_fallback_question(concept, user_belief, confusion_level)
-
-        # If model keeps returning the same generic medium-level pattern,
-        # rewrite it to the requested difficulty level.
-        if question.lower().startswith("what assumption about"):
-            question = self._build_level_fallback_question(concept, user_belief, confusion_level)
-
-        question = self._enforce_specific_question(
-            question=question,
-            concept=concept,
-            confusion_level=confusion_level,
-            user_belief=user_belief,
-            question_type=question_type,
-        )
-
-        quality = self._score_question_quality(question, concept, question_type)
-        if quality["quality"] == "low":
-            # Deterministic rescue path for low-quality or generic outputs.
-            question = self._build_level_fallback_question(concept, user_belief, confusion_level)
-            quality = self._score_question_quality(question, concept, question_type)
-
-        question_meta = self._build_question_metadata(concept, question_type)
-
+        question = str(question_payload.get("question", "")).strip() or self._build_level_fallback_question(concept, user_belief, confusion_level)
+        hint = str(question_payload.get("hint", "")).strip()
         print(f"[DEBUG] Final question: {repr(question)}")
         
         # BUILD response object
@@ -486,12 +737,7 @@ Rules:
             "user_belief": user_belief,
             "confusion_level": confusion_level,
             "question": question,
-            "question_type": question_type,
-            "why_this_question": question_meta["why_this_question"],
-            "expected_signal": question_meta["expected_signal"],
-            "next_if_correct": question_meta["next_if_correct"],
-            "next_if_incorrect": question_meta["next_if_incorrect"],
-            "question_quality": quality,
+            "hint": hint,
             "confidence": self._get_default_confidence(),
             "past_history": history,
             "demo_mode": not self.llm.available  # ONLY demo if LLM itself is unavailable
@@ -545,6 +791,8 @@ Rules:
         2. Recall: Previous interactions & confusion patterns are retrieved
         3. Reflect: Better follow-up question is generated based on response
         """
+        previous_question = self._normalize_question_text(previous_question)
+
         # STEP 1: Retain the user's response
         await self._retain_interaction(
             content=f"User response to Socratic question about {concept}",
@@ -562,54 +810,34 @@ Rules:
         history = await self.hindsight.recall_socratic_history(concept, user_id=user_id)
         insights = await self.hindsight.get_user_insights(user_id)
         
-        # STEP 3: Reflect - generate a BETTER follow-up based on response
-        style_instruction = self._get_socratic_style(confusion_level)
-        
-        response_analysis = self._analyze_response(user_response)
-        
-        reflect_prompt = await prompt_template_service.generate_adaptive_prompt(
-            user_id=user_id,
-            query=(
-                f"The student is learning about {concept}.\n"
-                f"Previous question: '{previous_question}'\n"
-                f"Student's response: '{user_response}'\n"
-                f"Response analysis: {response_analysis}\n"
-                f"Generate the NEXT Socratic question that:\n"
-                f"- Builds on their response\n"
-                f"- Is more specific and targeted\n"
-                f"- Addresses gaps in their understanding\n"
-                f"- Is under 20 words\n"
-                f"- Starts with What/How/Why\n"
-                f"{style_instruction}"
-            ),
-            topic=concept
+        # STEP 3: Reflect - generate adaptive follow-up and micro-hint
+        question_payload = await self.generateQuestion(
+            context={
+                "concept": concept,
+                "confusion_level": confusion_level,
+                "user_id": user_id,
+                "previous_question": previous_question,
+            },
+            hindsightData={"history": history, "insights": insights},
+            userResponse=user_response,
         )
-        
-        prompt = f"""{reflect_prompt}
-
-    DIFFICULTY ADAPTATION:
-    Confusion level: {confusion_level}/5
-    Style rule: {style_instruction}
-
-SPECIFIC INSTRUCTION FOR THIS RESPONSE:
-Return ONLY a JSON object with a "question" key containing the next Socratic question.
-Format: {{"question": "Your follow-up question here?"}}"""
-        
-        response = self.llm.generate(prompt, max_tokens=100, temperature=0.35)
-        follow_up_question = self._extract_question_from_response(response)
-        
+        follow_up_question = str(question_payload.get("question", "")).strip()
         if not follow_up_question:
-            # Fallback: generate question based on response type
             follow_up_question = self._build_followup_from_response(concept, user_response, confusion_level)
 
-        response_type = self._classify_response(user_response)
-        follow_up_type = "diagnostic" if response_type in {"no_knowledge", "vague_response"} else "assumption_probe"
-        follow_up_question = self._enforce_specific_question(
-            question=follow_up_question,
+        response_analysis_data = question_payload.get("response_analysis")
+        if isinstance(response_analysis_data, dict):
+            response_analysis = str(response_analysis_data.get("analysis", self._analyze_response(user_response)))
+        else:
+            response_analysis = self._analyze_response(user_response)
+        hint = str(question_payload.get("hint", "")).strip()
+
+        learning_state = await self.updateLearningState(
             concept=concept,
-            confusion_level=confusion_level,
-            user_belief=user_response,
-            question_type=follow_up_type,
+            user_id=user_id,
+            response_analysis=self.analyzeResponse(user_response),
+            previous_question=previous_question,
+            user_response=user_response,
         )
         
         from uuid import uuid4
@@ -622,12 +850,16 @@ Format: {{"question": "Your follow-up question here?"}}"""
             "user_response": user_response,
             "response_analysis": response_analysis,
             "follow_up_question": follow_up_question,
+            "hint": hint,
+            "learning_state": learning_state.get("learning_state"),
+            "understanding_score": learning_state.get("understanding_score"),
             "confusion_level": confusion_level,
             "confidence": self._get_default_confidence(),
             "demo_mode": not self.llm.available  # ONLY demo if LLM itself is unavailable, not based on history
         }
 
-        outcome = "resolved" if response_type in {"has_knowledge", "detailed_response"} else "unresolved"
+        response_type = str(learning_state.get("response_type", self._classify_response(user_response)))
+        outcome = str(learning_state.get("outcome", "unresolved"))
         await self._retain_interaction(
             content=(
                 f"Student believed '{concept}' misconception and responded '{user_response}'. "

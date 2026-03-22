@@ -7,6 +7,7 @@ from app.services.hindsight_service import hindsight_service
 from app.services.llm_service import llm_service
 import json
 import re
+import random
 
 router = APIRouter(prefix="/study", tags=["study"])
 
@@ -16,7 +17,7 @@ def get_archaeology_engine():
 
 
 def _fallback_quiz(topic: str) -> list[dict]:
-    return [
+    rows = [
         {
             "id": 1,
             "question": f"What is the core idea behind {topic}?",
@@ -33,6 +34,41 @@ def _fallback_quiz(topic: str) -> list[dict]:
             "expected_answer": "One practical scenario and the first step to solve it.",
         },
     ]
+
+    for row in rows:
+        row["options"] = _build_topic_options(
+            question=str(row["question"]),
+            expected_answer=str(row["expected_answer"]),
+            topic=topic,
+        )
+    return rows
+
+
+def _build_topic_options(question: str, expected_answer: str, topic: str) -> list[str]:
+    """Create 4 MCQ options: 1 correct + 3 topic-relevant distractors."""
+    expected = str(expected_answer).strip()
+    base_distractors = [
+        f"A common misconception in {topic} that sounds correct but misses the key principle.",
+        f"A partially correct explanation of {topic} that ignores an important condition.",
+        f"An answer mixing {topic} with a related but different concept.",
+    ]
+
+    # Keep distractors unique and not equal to expected.
+    seen = {expected.lower()}
+    distractors: list[str] = []
+    for d in base_distractors:
+        d_clean = d.strip()
+        if not d_clean:
+            continue
+        lowered = d_clean.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        distractors.append(d_clean)
+
+    options = [expected] + distractors[:3]
+    random.shuffle(options)
+    return options[:4]
 
 
 def _safe_parse_quiz_json(raw: str, topic: str) -> list[dict]:
@@ -53,8 +89,40 @@ def _safe_parse_quiz_json(raw: str, topic: str) -> list[dict]:
             continue
         q = str(row.get("question", "")).strip()
         a = str(row.get("expected_answer", "")).strip()
+        options_raw = row.get("options")
+        options = [str(opt).strip() for opt in options_raw] if isinstance(options_raw, list) else []
+
         if q and a:
-            questions.append({"id": idx, "question": q, "expected_answer": a})
+            if not options:
+                options = _build_topic_options(q, a, topic)
+            else:
+                # Ensure answer appears once and keep topic-relevant options.
+                normalized = []
+                seen = set()
+                for opt in options:
+                    if not opt:
+                        continue
+                    low = opt.lower()
+                    if low in seen:
+                        continue
+                    seen.add(low)
+                    normalized.append(opt)
+                options = normalized[:4]
+                if all(a.lower() != opt.lower() for opt in options):
+                    if len(options) >= 4:
+                        options[-1] = a
+                    else:
+                        options.append(a)
+                if len(options) < 4:
+                    extra = _build_topic_options(q, a, topic)
+                    for opt in extra:
+                        if len(options) >= 4:
+                            break
+                        if opt.lower() not in {x.lower() for x in options}:
+                            options.append(opt)
+                random.shuffle(options)
+
+            questions.append({"id": idx, "question": q, "expected_answer": a, "options": options[:4]})
 
     return questions if len(questions) == 3 else _fallback_quiz(topic)
 
@@ -118,13 +186,19 @@ async def generate_quiz(
     """
     try:
         if llm_service.available:
-            prompt = f"""Generate exactly 3 short revision questions for topic: {topic}.
+            prompt = f"""Generate exactly 3 multiple-choice revision questions for topic: {topic}.
 Return JSON array only in this format:
 [
-  {{"question":"...", "expected_answer":"..."}},
-  {{"question":"...", "expected_answer":"..."}},
-  {{"question":"...", "expected_answer":"..."}}
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}}
 ]
+Rules:
+- Exactly 4 options per question.
+- expected_answer must match one option exactly.
+- Other 3 options must be plausible, confusing, and topic-related.
+- Avoid generic options like 'I don't know' or 'Need more context'.
+- Keep options concise.
 No extra text."""
             raw = llm_service.generate(prompt, max_tokens=450, temperature=0.3)
             questions = _safe_parse_quiz_json(raw, topic)
