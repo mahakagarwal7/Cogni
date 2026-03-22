@@ -1168,54 +1168,50 @@ export default function ChatPage() {
 
   if (!isStarted) {
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 text-white relative overflow-hidden">
-        {/* Elegant background gradients */}
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-purple-900/20 via-zinc-950 to-zinc-950"></div>
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(168,85,247,0.15)_0,rgba(0,0,0,0)_50%)]" />
-        
-        {/* Subtle grid pattern for depth */}
-        <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.03)_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_50%,#000_70%,transparent_100%)] opacity-50"></div>
-
-        {/* Floating decorative elements */}
-        <div className="pointer-events-none absolute top-1/4 left-1/4 h-64 w-64 -translate-x-1/2 -translate-y-1/2 rounded-full bg-purple-600/20 blur-[120px]" />
-        <div className="pointer-events-none absolute bottom-1/4 right-1/4 h-64 w-64 translate-x-1/2 translate-y-1/2 rounded-full bg-indigo-600/20 blur-[120px]" />
+      <div className="flex h-screen flex-col items-center justify-center bg-[#09090b] text-zinc-100 relative overflow-hidden font-sans selection:bg-purple-500/30">
+        {/* SaaS-grade dynamic background */}
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.15),rgba(255,255,255,0))]" />
+        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay pointer-events-none" />
+        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-purple-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none" style={{ animationDuration: '8s' }} />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-indigo-600/20 blur-[120px] mix-blend-screen animate-pulse pointer-events-none" style={{ animationDuration: '10s', animationDelay: '2s' }} />
 
         <div className="z-10 flex flex-col items-center max-w-4xl text-center px-6 animate-in fade-in zoom-in duration-1000 slide-in-from-bottom-8">
-          <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-purple-500/30 bg-purple-500/10 px-4 py-1.5 text-sm font-medium text-purple-300 shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-md">
+          {/* Premium Badge */}
+          <div className="mb-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-1.5 text-sm font-medium text-purple-300 shadow-[0_0_20px_rgba(168,85,247,0.1)] backdrop-blur-md transition-all hover:bg-white/10 cursor-default">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-75"></span>
               <span className="relative inline-flex h-2 w-2 rounded-full bg-purple-500"></span>
             </span>
-            Metacognitive AI Engine
+            Cognitive Intelligence Engine v2.0
           </div>
 
-          <div className="mb-8 rounded-full bg-purple-500/10 p-6 ring-1 ring-purple-500/30 shadow-[0_0_60px_rgba(168,85,247,0.25)] backdrop-blur-sm transition-transform duration-500 hover:scale-110">
-            <MagicWandIcon className="h-16 w-16 text-purple-400" />
+          {/* Main Logo & Title */}
+          <div className="mb-8 rounded-2xl bg-gradient-to-br from-purple-500/10 to-indigo-500/10 p-6 ring-1 ring-white/10 shadow-[0_0_60px_rgba(168,85,247,0.15)] backdrop-blur-sm transition-transform duration-500 hover:scale-105">
+            <MagicWandIcon className="h-16 w-16 text-purple-400 drop-shadow-md" />
           </div>
-          <h1 className="mb-2 pt-2 pb-6 pr-2 text-8xl md:text-9xl font-extrabold leading-tight tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-purple-300 via-indigo-400 to-purple-600 drop-shadow-lg">
-            Cogni
+          <h1 className="mb-4 pt-2 pb-6 px-4 text-7xl md:text-8xl font-extrabold leading-tight tracking-tighter text-transparent bg-clip-text bg-gradient-to-br from-zinc-100 via-zinc-300 to-zinc-500 drop-shadow-sm">
+            Learn with <span className="bg-gradient-to-br from-purple-400 to-indigo-500 bg-clip-text text-transparent">Hindsight</span>
           </h1>
-          <p className="mb-12 text-xl md:text-2xl text-zinc-400 leading-relaxed max-w-2xl font-light">
-            Your intelligent study companion. It remembers your struggles, adapts to your patterns, and helps you master complex topics.
+          <p className="mb-14 text-lg md:text-xl text-zinc-400 leading-relaxed max-w-2xl font-light tracking-wide">
+            Your intelligent study companion. It remembers your struggles, adapts to your patterns, and helps you master complex topics through metacognitive analysis.
           </p>
+          
+          {/* CTA Button */}
           <Button
             onClick={enterApp}
             onMouseDown={enterApp}
             onTouchStart={enterApp}
             onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                enterApp();
-              }
+              if (e.key === "Enter" || e.key === " ") enterApp();
             }}
-            className="group relative h-16 overflow-hidden rounded-full bg-purple-600 px-14 text-xl font-medium text-white shadow-[0_0_40px_rgba(168,85,247,0.4)] transition-all duration-300 hover:scale-105 hover:shadow-[0_0_60px_rgba(168,85,247,0.6)] active:scale-95"
+            className="group relative h-14 overflow-hidden rounded-full bg-zinc-100 px-10 text-[16px] font-semibold text-zinc-950 transition-all duration-300 hover:scale-105 hover:shadow-[0_0_40px_rgba(255,255,255,0.3)] active:scale-95 border border-transparent hover:border-white/50"
           >
             <span className="relative z-10 flex items-center gap-2">
-              Let&apos;s Study
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-6 h-6 transition-transform duration-300 group-hover:translate-x-1">
+              Launch Workspace
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 transition-transform duration-300 group-hover:translate-x-1">
                 <path fillRule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.25a.75.75 0 010 1.08l-5.5 5.25a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clipRule="evenodd" />
               </svg>
             </span>
-            <div className="absolute inset-0 bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-600 opacity-0 transition-opacity duration-300 group-hover:opacity-100"></div>
           </Button>
         </div>
       </div>
@@ -1391,7 +1387,7 @@ export default function ChatPage() {
         </header>
         <main className="flex-1 scroll-smooth overflow-y-auto p-6 md:p-10">
           {activeFeature !== "graphs" && (
-            <div className="space-y-4">
+            <div className="space-y-6 pb-24 md:pb-32 max-w-4xl mx-auto">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -1644,29 +1640,31 @@ export default function ChatPage() {
               </Card>
             </div>
           ) : (
-            <div className="relative mx-auto flex max-w-5xl items-center rounded-full border border-zinc-600/80 bg-zinc-900/70 shadow-lg backdrop-blur-md transition-all focus-within:border-purple-500 focus-within:bg-zinc-900 focus-within:ring-4 focus-within:ring-purple-500/20 focus-within:shadow-[0_0_30px_rgba(168,85,247,0.15)] hover:border-zinc-500">
-              <Input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={getPlaceholder(activeFeature)}
-                className="h-16 w-full border-0 bg-transparent px-8 pr-16 text-[17px] placeholder:text-zinc-500 focus-visible:ring-0 shadow-none"
-                disabled={loading}
-              />
-              <Button
-                size="icon"
-                className="absolute right-2 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-purple-600 text-white shadow-md transition-all hover:scale-105 hover:bg-purple-500 hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-95 disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-md"
-                onClick={handleSend}
-                disabled={loading}
-              >
-                {loading ? (
-                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                ) : (
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-6 w-6 ml-0.5">
-                    <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
-                  </svg>
-                )}
-              </Button>
+            <div className="fixed bottom-0 left-[280px] right-0 p-6 md:p-8 bg-gradient-to-t from-[#09090b] via-[#09090b]/95 to-transparent pointer-events-none z-10">
+              <div className="relative mx-auto flex max-w-4xl items-center rounded-2xl border border-white/10 bg-[#18181b]/90 shadow-[0_8px_40px_rgba(0,0,0,0.4)] backdrop-blur-2xl transition-all duration-300 focus-within:border-purple-500/50 focus-within:ring-4 focus-within:ring-purple-500/10 hover:border-white/20 pointer-events-auto">
+                <Input
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={getPlaceholder(activeFeature)}
+                  className="h-16 w-full border-0 bg-transparent px-6 pr-20 text-[16px] placeholder:text-zinc-500 focus-visible:ring-0 shadow-none text-zinc-100 rounded-2xl"
+                  disabled={loading}
+                />
+                <Button
+                  size="icon"
+                  className="absolute right-2 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-xl bg-gradient-to-br from-purple-600 to-indigo-600 text-white shadow-lg transition-all duration-300 hover:scale-[1.05] hover:shadow-[0_0_20px_rgba(168,85,247,0.4)] active:scale-[0.95] disabled:opacity-40 disabled:hover:scale-100 disabled:hover:shadow-lg disabled:cursor-not-allowed"
+                  onClick={handleSend}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 ml-0.5">
+                      <path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" />
+                    </svg>
+                  )}
+                </Button>
+              </div>
             </div>
           )}
         </main>
@@ -1699,57 +1697,57 @@ function MessageBubble({
 
   if (isSystem) {
     return (
-      <div className="my-8 text-center text-base font-medium text-zinc-500">
+      <div className="my-10 text-center text-[15px] font-medium text-zinc-500 uppercase tracking-widest flex items-center justify-center gap-4">
+        <span className="h-px w-12 bg-zinc-800" />
         {message.content.split("\n").map((line, i) => (
-          <p key={i}>{line}</p>
+          <span key={i}>{line}</span>
         ))}
+        <span className="h-px w-12 bg-zinc-800" />
       </div>
     );
   }
 
   return (
     <div
-      className={`group message-enter flex items-end gap-4 ${isUser ? "justify-end" : "justify-start"}`}
+      className={`group flex w-full animate-in slide-in-from-bottom-2 fade-in duration-500 ${isUser ? "justify-end" : "justify-start"}`}
     >
-      {!isUser && (
-        <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-800 text-purple-400 shadow-sm">
-          {FEATURES.find((f) => f.id === message.feature)?.icon}
+      <div className={`flex max-w-[85%] sm:max-w-[75%] gap-4 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
+        {/* Avatar */}
+        <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl mt-auto shadow-sm ${isUser ? "bg-gradient-to-br from-purple-500 to-indigo-600 text-white ring-1 ring-white/20" : "bg-[#18181b] border border-white/10 text-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.1)]"}`}>
+          {isUser ? <span className="text-[12px] font-bold tracking-wider">ST</span> : FEATURES.find((f) => f.id === message.feature)?.icon || <MagicWandIcon className="h-4 w-4" />}
         </div>
-      )}
-      <Card
-        className={`relative max-w-[85%] border-none shadow-md transition-all duration-300 sm:max-w-2xl ${
-          isUser
-            ? "rounded-2xl rounded-br-sm bg-purple-600 text-white"
-            : "rounded-2xl rounded-bl-sm bg-zinc-800/90 text-zinc-100 backdrop-blur-sm"
-        }`}
-      >
-        {!isUser && (
-          <button
-            onClick={handleCopy}
-            className="absolute right-3 top-3 rounded-md bg-zinc-800/80 p-2 text-zinc-400 opacity-0 backdrop-blur-sm transition-all hover:scale-105 hover:bg-zinc-700 hover:text-zinc-100 active:scale-95 group-hover:opacity-100"
-            title="Copy to clipboard"
-          >
-            {copied ? (
-              <CheckIcon className="h-4 w-4 text-green-400" />
-            ) : (
-              <CopyIcon className="h-4 w-4" />
-            )}
-          </button>
-        )}
-        <CardContent className="px-6 py-5 text-[17px]">
+        
+        {/* Bubble */}
+        <Card
+          className={`relative flex flex-col border-0 shadow-lg transition-all duration-300 ${
+            isUser
+              ? "bg-gradient-to-br from-purple-600 to-indigo-600 text-white rounded-3xl rounded-br-sm shadow-purple-900/20"
+              : "bg-[#18181b]/90 border border-white/5 text-zinc-200 rounded-3xl rounded-bl-sm backdrop-blur-sm hover:shadow-xl hover:shadow-black/50"
+          }`}
+        >
+          {!isUser && (
+            <button
+              onClick={handleCopy}
+              className="absolute right-3 top-3 rounded-lg bg-white/5 p-2 text-zinc-400 opacity-0 backdrop-blur-md transition-all hover:scale-105 hover:bg-white/10 hover:text-zinc-100 active:scale-95 group-hover:opacity-100"
+              title="Copy to clipboard"
+            >
+              {copied ? <CheckIcon className="h-4 w-4 text-emerald-400" /> : <CopyIcon className="h-4 w-4" />}
+            </button>
+          )}
+          <CardContent className="px-6 py-5 text-[15px] sm:text-[16px]">
           {message.content.split("\n").map((line, i) => (
-            <p key={i} className={`leading-relaxed tracking-wide ${i > 0 ? "mt-4" : ""}`}>
+            <p key={i} className={`leading-relaxed ${i > 0 ? "mt-4" : ""}`}>
               {renderRichLine(line, isUser)}
             </p>
           ))}
           {message.metadata && Object.keys(message.metadata).length > 0 && (
-            <div className="mt-4 flex flex-wrap gap-2 text-xs">
+            <div className="mt-5 flex flex-wrap gap-2 text-[11px]">
               {Object.entries(message.metadata)
                 .filter(([key]) => !hiddenMetadataKeys.has(key))
                 .map(([key, value]) => (
                   <div
                     key={key}
-                    className="flex items-center gap-1.5 rounded-full bg-zinc-700/50 px-3 py-1"
+                    className="flex items-center gap-1.5 rounded-md bg-white/5 border border-white/5 px-2.5 py-1 text-zinc-400 font-medium"
                   >
                     <span className="font-semibold capitalize">
                       {key.replace(/_/g, " ")}:
@@ -1768,52 +1766,50 @@ function MessageBubble({
                   type="button"
                   disabled={feedbackLoading}
                   onClick={() => void onFeedback(message, value)}
-                  className={`rounded-md px-2 py-1 text-xs transition-colors ${
+                    className={`rounded-md h-7 w-7 text-xs font-medium transition-all ${
                     feedbackRating === value
-                      ? "bg-purple-600 text-white"
-                      : "bg-zinc-700/60 text-zinc-300 hover:bg-zinc-600"
-                  } ${feedbackLoading ? "cursor-not-allowed opacity-60" : ""}`}
+                        ? "bg-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.3)]"
+                        : "bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-zinc-200"
+                    } ${feedbackLoading ? "cursor-not-allowed opacity-50" : "active:scale-95"}`}
                 >
                   {value}
                 </button>
               ))}
               {feedbackRating !== undefined && (
-                <span className="text-xs text-zinc-400">Saved</span>
+                  <span className="text-[11px] text-emerald-400 ml-2 animate-in fade-in flex items-center gap-1"><CheckIcon className="h-3 w-3"/> Saved</span>
               )}
             </div>
           )}
         </CardContent>
-        <CardFooter className="p-2 text-xs text-zinc-400">
+          <CardFooter className={`p-2 px-6 text-[11px] font-medium opacity-60 ${isUser ? 'text-purple-200 justify-end' : 'text-zinc-500'}`}>
           {message.timestamp.toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
           })}
         </CardFooter>
       </Card>
-      {isUser && (
-        <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-purple-500/20 text-[13px] font-bold text-purple-300 ring-1 ring-purple-500/50 shadow-sm">
-          ST
-        </div>
-      )}
+      </div>
     </div>
   );
 }
 
 function LoadingBubble() {
   return (
-    <div className="message-enter flex items-end gap-4">
-      <div className="mb-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-zinc-600 bg-zinc-800 text-purple-400 shadow-sm">
-        <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-500 border-t-zinc-900" />
+    <div className="group flex w-full animate-in slide-in-from-bottom-2 fade-in duration-500 justify-start mb-6">
+      <div className="flex max-w-[85%] sm:max-w-[75%] gap-4 flex-row">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl mt-auto shadow-[0_0_15px_rgba(168,85,247,0.1)] bg-[#18181b] border border-white/10 text-purple-400">
+          <MagicWandIcon className="h-4 w-4 animate-pulse" />
+        </div>
+        <Card className="relative flex flex-col border border-white/5 bg-[#18181b]/90 rounded-3xl rounded-bl-sm shadow-lg backdrop-blur-sm">
+          <CardContent className="px-5 py-4">
+            <div className="flex items-center gap-1.5 px-1 py-1">
+              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-500" style={{ animationDelay: "0ms" }} />
+              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-500" style={{ animationDelay: "150ms" }} />
+              <div className="h-1.5 w-1.5 animate-bounce rounded-full bg-purple-500" style={{ animationDelay: "300ms" }} />
+            </div>
+          </CardContent>
+        </Card>
       </div>
-      <Card className="max-w-[85%] rounded-2xl rounded-bl-sm border-none bg-zinc-800/90 shadow-md backdrop-blur-sm sm:max-w-2xl">
-        <CardContent className="px-6 py-5">
-          <div className="flex items-center gap-2">
-            <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400" />
-            <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400" />
-            <div className="h-2 w-2 animate-pulse rounded-full bg-purple-400" />
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

@@ -1,0 +1,36 @@
+[
+  {
+    "id": "0_1774150069459",
+    "content": "Student hit confusion again about dynamic programming. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_b8fkgo",
+      "topic": "dynamic programming",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-22T08:57:47.967657",
+      "data_confusion_level": "3",
+      "data_confidence": "0.75",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-22T08:57:49.459983",
+    "stored_locally": true
+  },
+  {
+    "id": "1_1774150129980",
+    "content": "Student hit confusion again about recursion. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_b8fkgo",
+      "topic": "recursion",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-22T08:58:48.447042",
+      "data_confusion_level": "3",
+      "data_confidence": "0.75",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-22T08:58:49.980550",
+    "stored_locally": true
+  }
+]
