@@ -32,5 +32,39 @@
     },
     "timestamp": "2026-03-22T08:58:49.980550",
     "stored_locally": true
+  },
+  {
+    "id": "2_1774274990076",
+    "content": "Student hit confusion again about Dictionaries in python . Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_b8fkgo",
+      "topic": "Dictionaries in python ",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-23T19:39:48.516512",
+      "data_confusion_level": "3",
+      "data_confidence": "0.75",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-23T19:39:50.076744",
+    "stored_locally": true
+  },
+  {
+    "id": "3_1774275070863",
+    "content": "Student hit confusion again about Combinatorics. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_b8fkgo",
+      "topic": "Combinatorics",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-23T19:41:09.227748",
+      "data_confusion_level": "5",
+      "data_confidence": "0.5",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-23T19:41:10.863623",
+    "stored_locally": true
   }
 ]

@@ -1,0 +1,19 @@
+[
+  {
+    "id": "0_1774275163226",
+    "content": "Student hit confusion again about recursion. Previous strategy [visual_analogy] suggested.",
+    "metadata": {
+      "user_id": "student_b8fkjo",
+      "topic": "recursion",
+      "engine_feature": "archaeology",
+      "interaction_type": "tutoring_session",
+      "timestamp": "2026-03-23T19:42:41.803870",
+      "data_confusion_level": "3",
+      "data_confidence": "0.75",
+      "data_similar_moments": "0",
+      "data_suggested_strategy": "visual_analogy"
+    },
+    "timestamp": "2026-03-23T19:42:43.226882",
+    "stored_locally": true
+  }
+]

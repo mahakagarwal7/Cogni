@@ -1,6 +1,6 @@
 # backend/app/routes/study_routes.py
 from fastapi import APIRouter, HTTPException, Depends, Query
-from typing import Optional
+from typing import Optional, Any
 from app.engines.archaeology_engine import ArchaeologyEngine
 from app.models.memory_types import StudySession, APIResponse, QuizSubmission
 from app.services.hindsight_service import hindsight_service
@@ -14,6 +14,328 @@ router = APIRouter(prefix="/study", tags=["study"])
 # Dependency injection for engine
 def get_archaeology_engine():
     return ArchaeologyEngine()
+
+
+def _tokenize_for_similarity(text: str) -> set[str]:
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", str(text or "").lower())
+    return {tok for tok in cleaned.split() if len(tok) > 2}
+
+
+def _jaccard_similarity(text_a: str, text_b: str) -> float:
+    a = _tokenize_for_similarity(text_a)
+    b = _tokenize_for_similarity(text_b)
+    if not a or not b:
+        return 0.0
+    return len(a.intersection(b)) / float(max(1, len(a.union(b))))
+
+
+def _is_question_topic_aligned(question: str, topic: str) -> bool:
+    q = str(question or "").strip().lower()
+    t = str(topic or "").strip().lower()
+    if not q or not t:
+        return False
+
+    topic_tokens = [tok for tok in re.sub(r"[^a-z0-9\s]", " ", t).split() if len(tok) > 2]
+    if not topic_tokens:
+        return t in q
+
+    overlap = sum(1 for tok in topic_tokens if tok in q)
+    return overlap >= 1
+
+
+def _has_low_option_diversity(options: list[str], expected_answer: str) -> bool:
+    cleaned = [str(opt).strip() for opt in (options or []) if str(opt).strip()]
+    if len(cleaned) < 4:
+        return True
+
+    normalized = [opt.lower() for opt in cleaned]
+    if len(set(normalized)) < 4:
+        return True
+
+    expected_lower = str(expected_answer or "").strip().lower()
+    distractors = [opt for opt in cleaned if opt.lower() != expected_lower]
+    if len(distractors) < 3:
+        return True
+
+    for i in range(len(distractors)):
+        for j in range(i + 1, len(distractors)):
+            if _jaccard_similarity(distractors[i], distractors[j]) >= 0.68:
+                return True
+
+    opening_phrases = [" ".join(d.lower().split()[:4]) for d in distractors if len(d.split()) >= 4]
+    if len(opening_phrases) != len(set(opening_phrases)):
+        return True
+
+    return False
+
+
+def _extract_weak_topics_from_evidence(evidence: list[str]) -> list[str]:
+    weak_topics: list[str] = []
+    for item in evidence or []:
+        text = str(item or "").strip()
+        if "quiz weakness detected in:" not in text.lower():
+            continue
+        rhs = text.split(":", 1)[1] if ":" in text else ""
+        for topic in rhs.split(","):
+            clean = topic.strip()
+            if clean and clean.lower() not in {w.lower() for w in weak_topics}:
+                weak_topics.append(clean)
+    return weak_topics
+
+
+async def _build_quiz_hindsight_context(topic: str, user_id: str) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "prediction": "",
+        "evidence": [],
+        "weak_topics": [],
+        "recent_topics": [],
+    }
+
+    try:
+        shadow = await hindsight_service.reflect_cognitive_shadow(
+            days=60,
+            user_id=user_id,
+            current_topic=topic,
+        )
+        evidence = shadow.get("evidence") if isinstance(shadow, dict) else []
+        recent_topics = shadow.get("recent_topics") if isinstance(shadow, dict) else []
+        prediction = str((shadow or {}).get("prediction", "")).strip() if isinstance(shadow, dict) else ""
+        context["prediction"] = prediction
+        context["evidence"] = [str(x).strip() for x in evidence if str(x).strip()]
+        context["recent_topics"] = [str(x).strip() for x in recent_topics if str(x).strip()]
+        context["weak_topics"] = _extract_weak_topics_from_evidence(context["evidence"])
+    except Exception:
+        pass
+
+    return context
+
+
+def _build_quiz_prompt(topic: str, hindsight_context: dict[str, Any]) -> str:
+    weak_topics = hindsight_context.get("weak_topics") or []
+    prediction = str(hindsight_context.get("prediction") or "").strip()
+    evidence = hindsight_context.get("evidence") or []
+
+    weakness_line = ", ".join(weak_topics[:3]) if weak_topics else "none"
+    evidence_line = "; ".join([str(item) for item in evidence[:2]]) if evidence else "none"
+
+    return f"""Generate exactly 3 multiple-choice revision questions for topic: {topic}.
+Personalize using hindsight signals when relevant.
+
+Hindsight weak areas: {weakness_line}
+Hindsight prediction: {prediction or 'none'}
+Hindsight evidence: {evidence_line}
+
+Return JSON array only in this format:
+[
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}}
+]
+
+Hard rules:
+- Exactly 3 questions and exactly 4 options per question.
+- Every question must explicitly mention '{topic}' or a direct topic term.
+- expected_answer must match one option exactly.
+- Options must be materially different in meaning and wording (no one-word swaps).
+- Three distractors must each represent different error modes:
+  1) overgeneralization,
+  2) missing condition/step,
+  3) confusion with a related concept.
+- Avoid generic options like 'I don't know' or 'Need more context'.
+- Keep options concise.
+- No extra text outside JSON."""
+
+
+def _extract_json_array(raw: str) -> list[Any]:
+    cleaned = str(raw or "").replace("<think>", "").replace("</think>", "").strip()
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+    except Exception:
+        return []
+
+    return parsed if isinstance(parsed, list) else []
+
+
+def _build_quiz_repair_prompt(topic: str, previous_output: str) -> str:
+    return f"""Rewrite the following output into valid JSON ONLY.
+
+Topic: {topic}
+Bad output:
+{previous_output}
+
+Required format:
+[
+  {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+  {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
+  {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}}
+]
+
+Rules:
+- Exactly 3 questions.
+- Exactly 4 options each.
+- expected_answer appears exactly once in options.
+- Every question must be explicitly about {topic}.
+- Return only JSON array, no markdown.
+"""
+
+
+def _build_llm_options(question: str, expected_answer: str, topic: str, hindsight_context: dict[str, Any]) -> list[str]:
+    expected = str(expected_answer).strip()
+    weak_topics = hindsight_context.get("weak_topics") or []
+    weakness_line = ", ".join(weak_topics[:2]) if weak_topics else "none"
+
+    prompt = f"""For this MCQ, generate 4 options as a JSON array of strings.
+
+Topic: {topic}
+Question: {question}
+Correct answer (must appear exactly once): {expected}
+Relevant weak areas: {weakness_line}
+
+Rules:
+- Return only a JSON array with exactly 4 strings.
+- Include the correct answer exactly once.
+- Create 3 distractors that are plausible but clearly different from each other in logic and wording.
+- Do not use templated openings repeated across distractors.
+- Keep each option concise.
+"""
+
+    raw = llm_service.generate(prompt, max_tokens=220, temperature=0.85)
+    cleaned = str(raw or "").replace("<think>", "").replace("</think>", "").strip()
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+    except Exception:
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    normalized: list[str] = []
+    seen = set()
+    for item in parsed:
+        opt = str(item).strip()
+        if not opt:
+            continue
+        low = opt.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        normalized.append(opt)
+
+    if all(opt.lower() != expected.lower() for opt in normalized):
+        if len(normalized) >= 4:
+            normalized[-1] = expected
+        else:
+            normalized.append(expected)
+
+    if len(normalized) >= 4:
+        random.shuffle(normalized)
+        return normalized[:4]
+
+    return []
+
+
+def _build_single_llm_question(topic: str, hindsight_context: dict[str, Any]) -> dict[str, Any]:
+    weak_topics = hindsight_context.get("weak_topics") or []
+    weakness_line = ", ".join(weak_topics[:2]) if weak_topics else "none"
+    prompt = f"""Generate one multiple-choice question about topic: {topic}.
+
+Use this exact JSON object format only:
+{{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}}
+
+Rules:
+- Question must explicitly mention {topic}.
+- Exactly 4 options.
+- expected_answer must appear exactly once in options.
+- Distractors must be plausible and mutually different.
+- Consider this weakness context if useful: {weakness_line}
+- Return only JSON object.
+"""
+
+    raw = llm_service.generate(prompt, max_tokens=260, temperature=0.85)
+    cleaned = str(raw or "").replace("<think>", "").replace("</think>", "").strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+    except Exception:
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    q = str(parsed.get("question", "")).strip()
+    a = str(parsed.get("expected_answer", "")).strip()
+    options_raw = parsed.get("options")
+    options = [str(opt).strip() for opt in options_raw] if isinstance(options_raw, list) else []
+
+    if not q or not a or not _is_question_topic_aligned(q, topic):
+        return {}
+
+    if not options or _has_low_option_diversity(options, a):
+        options = _build_llm_options(q, a, topic, hindsight_context) or _build_topic_options(q, a, topic)
+
+    return {"question": q, "expected_answer": a, "options": options[:4]}
+
+
+def _post_process_quiz_rows(rows: list[dict], topic: str, hindsight_context: dict[str, Any]) -> list[dict]:
+    questions: list[dict] = []
+    for idx, row in enumerate(rows[:3], start=1):
+        if not isinstance(row, dict):
+            continue
+        question = str(row.get("question", "")).strip()
+        expected = str(row.get("expected_answer", "")).strip()
+        options_raw = row.get("options")
+        options = [str(opt).strip() for opt in options_raw] if isinstance(options_raw, list) else []
+
+        if not question or not expected or not _is_question_topic_aligned(question, topic):
+            continue
+
+        if not options or _has_low_option_diversity(options, expected):
+            regenerated = _build_llm_options(question, expected, topic, hindsight_context)
+            options = regenerated if regenerated else _build_topic_options(question, expected, topic)
+
+        questions.append({"id": idx, "question": question, "expected_answer": expected, "options": options[:4]})
+
+    while len(questions) < 3 and llm_service.available:
+        generated = _build_single_llm_question(topic, hindsight_context)
+        if not generated:
+            break
+        next_id = len(questions) + 1
+        questions.append({
+            "id": next_id,
+            "question": generated["question"],
+            "expected_answer": generated["expected_answer"],
+            "options": generated["options"],
+        })
+
+    if len(questions) < 3:
+        fallback_rows = _fallback_quiz(topic)
+        for row in fallback_rows:
+            if len(questions) >= 3:
+                break
+            if any(q["question"].lower() == str(row.get("question", "")).strip().lower() for q in questions):
+                continue
+            questions.append({
+                "id": len(questions) + 1,
+                "question": str(row.get("question", "")).strip(),
+                "expected_answer": str(row.get("expected_answer", "")).strip(),
+                "options": [str(opt).strip() for opt in (row.get("options") or [])][:4],
+            })
+
+    return questions[:3]
 
 
 def _fallback_quiz(topic: str) -> list[dict]:
@@ -48,9 +370,9 @@ def _build_topic_options(question: str, expected_answer: str, topic: str) -> lis
     """Create 4 MCQ options: 1 correct + 3 topic-relevant distractors."""
     expected = str(expected_answer).strip()
     base_distractors = [
-        f"A common misconception in {topic} that sounds correct but misses the key principle.",
-        f"A partially correct explanation of {topic} that ignores an important condition.",
-        f"An answer mixing {topic} with a related but different concept.",
+        f"A broad statement about {topic} that overgeneralizes and fails on edge cases.",
+        f"An explanation of {topic} that skips a required condition or intermediate step.",
+        f"A description that confuses {topic} with a nearby but distinct concept.",
     ]
 
     # Keep distractors unique and not equal to expected.
@@ -92,7 +414,7 @@ def _safe_parse_quiz_json(raw: str, topic: str) -> list[dict]:
         options_raw = row.get("options")
         options = [str(opt).strip() for opt in options_raw] if isinstance(options_raw, list) else []
 
-        if q and a:
+        if q and a and _is_question_topic_aligned(q, topic):
             if not options:
                 options = _build_topic_options(q, a, topic)
             else:
@@ -186,22 +508,27 @@ async def generate_quiz(
     """
     try:
         if llm_service.available:
-            prompt = f"""Generate exactly 3 multiple-choice revision questions for topic: {topic}.
-Return JSON array only in this format:
-[
-    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
-    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}},
-    {{"question":"...", "expected_answer":"...", "options":["...","...","...","..."]}}
-]
-Rules:
-- Exactly 4 options per question.
-- expected_answer must match one option exactly.
-- Other 3 options must be plausible, confusing, and topic-related.
-- Avoid generic options like 'I don't know' or 'Need more context'.
-- Keep options concise.
-No extra text."""
-            raw = llm_service.generate(prompt, max_tokens=450, temperature=0.3)
-            questions = _safe_parse_quiz_json(raw, topic)
+            hindsight_context = await _build_quiz_hindsight_context(topic=topic, user_id=user_id)
+            prompt = _build_quiz_prompt(topic=topic, hindsight_context=hindsight_context)
+            raw = llm_service.generate(prompt, max_tokens=650, temperature=0.8)
+            initial_rows = _extract_json_array(raw)
+            if not initial_rows:
+                repair_prompt = _build_quiz_repair_prompt(topic=topic, previous_output=raw)
+                repaired_raw = llm_service.generate(repair_prompt, max_tokens=650, temperature=0.2)
+                initial_rows = _extract_json_array(repaired_raw)
+
+            if not initial_rows:
+                parsed_rows = _safe_parse_quiz_json(raw, topic)
+                initial_rows = [
+                    {
+                        "question": q.get("question", ""),
+                        "expected_answer": q.get("expected_answer", ""),
+                        "options": q.get("options", []),
+                    }
+                    for q in parsed_rows
+                ]
+
+            questions = _post_process_quiz_rows(initial_rows, topic, hindsight_context)
         else:
             questions = _fallback_quiz(topic)
 
@@ -265,6 +592,9 @@ async def submit_quiz(submission: QuizSubmission):
             "quiz_total": total,
             "quiz_score_ratio": round(score_ratio, 3),
             "quiz_mistakes": json.dumps(mistakes),
+            "quiz_questions": json.dumps(submission.questions or []),
+            "quiz_correct_answers": json.dumps(submission.correct_answers or []),
+            "quiz_student_answers": json.dumps(submission.student_answers or []),
             "weak_area": weak_area,
             "time_taken_seconds": submission.time_taken_seconds or 0,
             "error_type": "low_quiz_score" if score_ratio < 0.67 else "quiz_mastery",
