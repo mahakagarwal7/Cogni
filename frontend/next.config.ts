@@ -1,9 +1,9 @@
-// frontend/next.config.js
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
   turbopack: {
     root: __dirname,
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
