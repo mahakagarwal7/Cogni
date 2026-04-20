@@ -1,6 +1,8 @@
 # 🧠 Cogni — Metacognitive Study Companion
 
 **AI learning agents powered by Hindsight memory + LLM reasoning**
+**Live Deployed link** : https://cogni8cws.vercel.app/
+**Video Link** : https://drive.google.com/file/d/1dUk7YRL_s8WFhrGKAbt_Ki-B2IGe2J1u/view?usp=sharing
 
 Cogni is a full-stack learning system that helps students understand concepts deeply, track learning progress over time, and receive adaptive coaching across multiple cognitive modes.
 
